@@ -1,11 +1,15 @@
 #include <Mahi/Gui.hpp>
+#include <Mahi/Util.hpp>
 #include <mutex>
 #include <deque>
+#include <string>
+#include <utility>
+#include <memory>
+#include <vector>
 #include <rclcpp/rclcpp.hpp>
 #include <four_wheel_steering_msgs/msg/four_wheel_steering_stamped.hpp>
 
-using namespace mahi::gui;
-using namespace mahi::util;
+using mahi::gui::Application;
 using four_wheel_steering_msgs::msg::FourWheelSteeringStamped;
 using std::placeholders::_1;
 
@@ -58,26 +62,33 @@ class QuickPlot : public Application
 {
 private:
   std::shared_ptr<BufferNode> node_;
+  rclcpp::Event::SharedPtr graph_event_;
+
   std::vector<double> times_;
   std::vector<double> data_;
 
   std::vector<double> history_tick_values_;
   std::vector<std::string> history_tick_labels_;
 
+  std::vector<std::pair<std::string, std::string>> topics_;
+
 public:
-  QuickPlot(std::shared_ptr<BufferNode> _node)
-  : Application(640, 480, "QuickPlot"), node_(_node) {
-    set_vsync(false);
+  explicit QuickPlot(std::shared_ptr<BufferNode> _node)
+  : Application(640, 480, "QuickPlot"), node_(_node)
+  {
+    set_vsync(true);
     ImGui::DisableViewports();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    ImGui::EnableDocking();
+    graph_event_ = node_->get_graph_event();
   }
 
   void update() override
   {
+    node_->take(times_, data_);
+
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     auto vec2 = get_window_size();
-    ImGui::SetNextWindowPos({0,0}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos({0, 0}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(vec2.x, vec2.y), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.0f);
 
@@ -88,48 +99,69 @@ public:
     }
     ImGui::PopStyleVar();
 
-    static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode | ImGuiWindowFlags_NoBackground;
+    static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode |
+      ImGuiWindowFlags_NoBackground;
     ImGuiID dockspace_id = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
-
     ImGui::SetNextWindowDockID(dockspace_id, ImGuiCond_FirstUseEver);
 
-    node_->take(times_, data_);
-
-    static float history_sec = 10.0f;
-    ImGui::SliderFloat("history", &history_sec, 1, 30, "%.1f s");
-    auto history_dur = rclcpp::Duration::from_seconds(history_sec);
-    auto t = node_->now();
-    auto end_sec = t.seconds();
-    auto start_sec = (t - history_dur).seconds();
-
-    ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-    ImPlot::SetNextPlotLimitsY(-2, 2);
-
-    size_t n_ticks = history_sec;
-    if (n_ticks != history_tick_values_.size()) {
-      history_tick_labels_.clear();
-      history_tick_values_.clear();
-      for (int i = n_ticks; i >= 0; i--) {
-        history_tick_labels_.push_back(std::to_string(-i));
-        history_tick_values_.push_back(end_sec - i);
+    if (graph_event_->check_and_clear()) {
+      topics_.clear();
+      auto topics_and_types = node_->get_topic_names_and_types();
+      for (const auto & pair : topics_and_types) {
+        if (pair.second.size() != 1) {
+          std::cout << "Can only handle single-type topics" << std::endl;
+          continue;
+        }
+        topics_.push_back(std::make_pair(pair.first, pair.second[0]));
       }
     }
 
-    std::vector<char const *> tick_cstrings;
-    tick_cstrings.reserve(history_tick_labels_.size());
-    for (const auto & labels : history_tick_labels_) {
-      tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
+    if (ImGui::TreeNode("Topics")) {
+      for (const auto & topic : topics_) {
+        ImGui::Text(topic.first.c_str());
+      }
+      ImGui::TreePop();
     }
-    ImPlot::SetNextPlotTicksX(
-      history_tick_values_.data(),
-      history_tick_values_.size(), tick_cstrings.data());
+    ImGui::SameLine();
 
-    if (ImPlot::BeginPlot(
-        "speed", "t (header.stamp sec)", "m/s", ImVec2(-1, -1), ImPlotFlags_None))
-    {
-      ImPlot::PlotLine(
-        "cmd_4ws", times_.data(), data_.data(), times_.size());
-      ImPlot::EndPlot();
+    if (ImGui::TreeNode("Plots")) {
+      static float history_sec = 10.0f;
+      ImGui::SliderFloat("history", &history_sec, 1, 30, "%.1f s");
+      auto history_dur = rclcpp::Duration::from_seconds(history_sec);
+      auto t = node_->now();
+      auto end_sec = t.seconds();
+      auto start_sec = (t - history_dur).seconds();
+
+      ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
+      ImPlot::SetNextPlotLimitsY(-2, 2);
+
+      size_t n_ticks = history_sec;
+      if (n_ticks != history_tick_values_.size()) {
+        history_tick_labels_.clear();
+        history_tick_values_.clear();
+        for (int i = n_ticks; i >= 0; i--) {
+          history_tick_labels_.push_back(std::to_string(-i));
+          history_tick_values_.push_back(end_sec - i);
+        }
+      }
+
+      std::vector<char const *> tick_cstrings;
+      tick_cstrings.reserve(history_tick_labels_.size());
+      for (const auto & labels : history_tick_labels_) {
+        tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
+      }
+      ImPlot::SetNextPlotTicksX(
+        history_tick_values_.data(),
+        history_tick_values_.size(), tick_cstrings.data());
+
+      if (ImPlot::BeginPlot(
+          "speed", "t (header.stamp sec)", "m/s", ImVec2(-1, -1), ImPlotFlags_None))
+      {
+        ImPlot::PlotLine(
+          "cmd_4ws", times_.data(), data_.data(), times_.size());
+        ImPlot::EndPlot();
+      }
+      ImGui::TreePop();
     }
     ImGui::End();
   }
@@ -139,6 +171,9 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<BufferNode>();
+
+  auto topics_and_types = node->get_topic_names_and_types();
+
   std::thread ros_thread([ = ] {
       rclcpp::spin(node);
     });
