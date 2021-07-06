@@ -99,3 +99,53 @@ TEST(test_parser, parse_odometry_header_and_field)
   EXPECT_EQ(buffer.data[0].value, 1.0);
   EXPECT_EQ(buffer.data[1].value, 2.0);
 }
+
+TEST(test_parser, parse_twist_allocate_generic)
+{
+  auto topic_type = "geometry_msgs/TwistStamped";
+
+  auto type_support_library = quickplot::get_typesupport_library(
+    topic_type,
+    rosidl_typesupport_cpp::typesupport_identifier);
+  auto type_support = quickplot::get_typesupport_handle(
+    topic_type,
+    rosidl_typesupport_cpp::typesupport_identifier,
+    type_support_library);
+
+  auto introspection_library = quickplot::get_typesupport_library(
+    topic_type,
+    rosidl_typesupport_introspection_cpp::typesupport_identifier);
+  auto introspection_support = quickplot::get_typesupport_handle(
+    topic_type,
+    rosidl_typesupport_introspection_cpp::typesupport_identifier,
+    introspection_library);
+
+  TwistStamped msg;
+  msg.header.stamp = rclcpp::Time(99, 99, RCL_ROS_TIME);
+  msg.twist.linear.x = 1.0;
+
+  rclcpp::Serialization<TwistStamped> serializer;
+  rclcpp::SerializedMessage serialized_msg;
+  serializer.serialize_message(static_cast<void*>(&msg), &serialized_msg);
+
+  auto members =
+    static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(introspection_support
+    ->data);
+  void* data_buffer = new uint8_t[members->size_of_];
+  members->init_function(data_buffer, rosidl_runtime_cpp::MessageInitialization::ALL);
+
+  quickplot::MessageDataBuffer buffer;
+  auto & linear_x_data = buffer.data.emplace_back();
+  linear_x_data.member_path = {"twist", "linear", "x"};
+
+  quickplot::parse_generic_message(
+    type_support, introspection_support,
+    serialized_msg, data_buffer, buffer);
+
+  members->fini_function(data_buffer);
+  free(data_buffer);
+
+  EXPECT_EQ(buffer.stamp, rclcpp::Time(99, 99, RCL_ROS_TIME));
+  EXPECT_EQ(buffer.data.size(), 1ul);
+  EXPECT_EQ(buffer.data[0].value, 1.0);
+}
