@@ -43,6 +43,7 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
   find_package(ament_cmake_gtest REQUIRED)
   find_package(geometry_msgs REQUIRED)
+  find_package(nav_msgs REQUIRED)
 
   ament_add_gtest(test_parser test/test_parser.cpp)
   target_include_directories(test_parser PRIVATE include)
@@ -51,7 +52,8 @@ if(BUILD_TESTING)
     rclcpp
     rosidl_typesupport_cpp
     rosidl_typesupport_introspection_cpp
-    geometry_msgs)
+    geometry_msgs
+    nav_msgs)
 endif()
 
 install(TARGETS ${PROJECT_NAME} EXPORT ${PROJECT_NAME}
