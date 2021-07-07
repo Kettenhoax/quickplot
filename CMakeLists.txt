@@ -9,6 +9,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wunused)
 endif()
 
+find_package(Boost REQUIRED COMPONENTS system)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -29,7 +30,7 @@ ament_target_dependencies(quickplot-utils
 
 add_executable(${PROJECT_NAME} src/plot.cpp)
 target_include_directories(${PROJECT_NAME} PRIVATE include)
-target_link_libraries(${PROJECT_NAME} mahi::gui quickplot-utils)
+target_link_libraries(${PROJECT_NAME} Boost::system mahi::gui quickplot-utils)
 
 ament_target_dependencies(${PROJECT_NAME}
   rclcpp
