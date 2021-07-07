@@ -37,7 +37,7 @@ private:
   const rosidl_message_type_support_t * type_support_handle_;
   const rosidl_message_type_support_t * introspection_support_handle_;
 
-  uint8_t* deserialized_message_buffer_;
+  uint8_t * deserialized_message_buffer_;
   MessageDataBuffer data_buffer_;
 
 public:
@@ -184,12 +184,13 @@ private:
 
 public:
   explicit QuickPlot(std::shared_ptr<BufferNode> _node)
-  : Application(640, 480, "QuickPlot"), node_(_node)
+  : Application(1024, 768, "QuickPlot"), node_(_node)
   {
     set_vsync(true);
     ImGui::DisableViewports();
     ImGui::EnableDocking();
     graph_event_ = node_->get_graph_event();
+    graph_event_->set(); // set manually to trigger initial topics query
   }
 
   void update() override
@@ -213,6 +214,7 @@ public:
     ImGui::SetNextWindowDockID(dockspace_id, ImGuiCond_FirstUseEver);
 
     if (graph_event_->check_and_clear()) {
+      RCLCPP_INFO(node_->get_logger(), "Graph event checked, reloading available topics");
       auto topics_and_types = node_->get_topic_names_and_types();
       for (const auto & [topic, types] : topics_and_types) {
         if (types.size() != 1) {
@@ -232,83 +234,95 @@ public:
       }
     }
 
-    for (const auto & topic : available_topics_to_types_) {
-      if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-        ImGui::SetDragDropPayload("topic_name", topic.first.c_str(), topic.first.size());
-        // ImPlot::ItemIcon(dnd[k].Color); ImGui::SameLine();
-        ImGui::Text("%s", topic.first.c_str());
-        ImGui::EndDragDropSource();
-      }
-    }
-
-    static float history_sec = 10.0f;
-    ImGui::SliderFloat("history", &history_sec, 1, 30, "%.1f s");
-    auto history_dur = rclcpp::Duration::from_seconds(history_sec);
-    auto t = node_->now();
-    auto end_sec = t.seconds();
-    auto start_sec = (t - history_dur).seconds();
-
-    ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-    ImPlot::SetNextPlotLimitsY(-2, 2);
-
-    size_t n_ticks = history_sec;
-    if (n_ticks != history_tick_values_.size()) {
-      history_tick_labels_.clear();
-      history_tick_values_.clear();
-      for (int i = n_ticks; i >= 0; i--) {
-        history_tick_labels_.push_back(std::to_string(-i));
-        history_tick_values_.push_back(end_sec - i);
-      }
-    }
-
-    std::vector<char const *> tick_cstrings;
-    tick_cstrings.reserve(history_tick_labels_.size());
-    for (const auto & labels : history_tick_labels_) {
-      tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
-    }
-    ImPlot::SetNextPlotTicksX(
-      history_tick_values_.data(),
-      history_tick_values_.size(), tick_cstrings.data());
-
-    if (ImPlot::BeginPlot(
-        "speed", "t (header.stamp sec)", "m/s", ImVec2(-1, -1), ImPlotFlags_None))
     {
-      for (int y = 0; y < 3; ++y) {
-        if (ImPlot::BeginDragDropTargetY(y)) {
-          if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-            auto topic_name = std::string(static_cast<char *>(payload->Data));
-            node_->add_topic_field(
-              topic_name, available_topics_to_types_[topic_name], {"data",
-                "speed"});
-          }
-          ImPlot::EndDragDropTarget();
+      ImGui::BeginChild("left pane", ImVec2(150, 0), true, ImGuiWindowFlags_NoMove);
+      for (const auto & topic : available_topics_to_types_) {
+        ImGui::Text("%s", topic.first.c_str());
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+          ImGui::SetDragDropPayload("topic_name", topic.first.c_str(), topic.first.size());
+          // ImPlot::ItemIcon(dnd[k].Color); ImGui::SameLine();
+          ImGui::Text("Draggin %s", topic.first.c_str());
+          ImGui::EndDragDropSource();
         }
       }
-      for (const auto & topic : node_->active_topics()) {
-        auto new_data = node_->take(topic);
-        if (new_data.empty()) {
-          continue;
-        }
-        
-        auto [entry, _] = active_topics_to_data_.try_emplace(topic);
-        auto [plot_topic, plot_data] = *entry;
+      ImGui::EndChild();
+    }
+    ImGui::SameLine();
+    {
+      ImGui::BeginChild(
+        "plot view", ImVec2(
+          0,
+          -ImGui::GetFrameHeightWithSpacing()), ImGuiWindowFlags_NoMove);
+      static float history_sec = 10.0f;
+      ImGui::SliderFloat("history", &history_sec, 1, 30, "%.1f s");
+      auto history_dur = rclcpp::Duration::from_seconds(history_sec);
+      auto t = node_->now();
+      auto end_sec = t.seconds();
+      auto start_sec = (t - history_dur).seconds();
 
-        plot_data.values.resize(new_data[0].value.size());
+      ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
+      ImPlot::SetNextPlotLimitsY(-2, 2);
 
-        for (const auto & item : new_data) {
-          plot_data.times.push_back(item.t.seconds());
-          for (size_t i = 0; i < item.value.size(); i++) {
-            plot_data.values[i].push_back(item.value[i]);
-          }
-        }
-
-        for (size_t i = 0; i < plot_data.values.size(); i++) {
-          ImPlot::PlotLine(
-            topic.c_str(), plot_data.times.data(), plot_data.values[i].data(),
-            plot_data.times.size());
+      size_t n_ticks = history_sec;
+      if (n_ticks != history_tick_values_.size()) {
+        history_tick_labels_.clear();
+        history_tick_values_.clear();
+        for (int i = n_ticks; i >= 0; i--) {
+          history_tick_labels_.push_back(std::to_string(-i));
+          history_tick_values_.push_back(end_sec - i);
         }
       }
-      ImPlot::EndPlot();
+
+      std::vector<char const *> tick_cstrings;
+      tick_cstrings.reserve(history_tick_labels_.size());
+      for (const auto & labels : history_tick_labels_) {
+        tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
+      }
+      ImPlot::SetNextPlotTicksX(
+        history_tick_values_.data(),
+        history_tick_values_.size(), tick_cstrings.data());
+
+      if (ImPlot::BeginPlot(
+          "speed", "t (header.stamp sec)", "m/s", ImVec2(-1, -1), ImPlotFlags_None))
+      {
+        for (int y = 0; y < 3; ++y) {
+          if (ImPlot::BeginDragDropTargetY(y)) {
+            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+              auto topic_name = std::string(static_cast<char *>(payload->Data));
+              node_->add_topic_field(
+                topic_name, available_topics_to_types_[topic_name], {"data",
+                  "speed"});
+            }
+            ImPlot::EndDragDropTarget();
+          }
+        }
+        for (const auto & topic : node_->active_topics()) {
+          auto new_data = node_->take(topic);
+          if (new_data.empty()) {
+            continue;
+          }
+
+          auto [entry, _] = active_topics_to_data_.try_emplace(topic);
+          auto [plot_topic, plot_data] = *entry;
+
+          plot_data.values.resize(new_data[0].value.size());
+
+          for (const auto & item : new_data) {
+            plot_data.times.push_back(item.t.seconds());
+            for (size_t i = 0; i < item.value.size(); i++) {
+              plot_data.values[i].push_back(item.value[i]);
+            }
+          }
+
+          for (size_t i = 0; i < plot_data.values.size(); i++) {
+            ImPlot::PlotLine(
+              topic.c_str(), plot_data.times.data(), plot_data.values[i].data(),
+              plot_data.times.size());
+          }
+        }
+        ImPlot::EndPlot();
+      }
+      ImGui::EndChild();
     }
     ImGui::End();
   }
