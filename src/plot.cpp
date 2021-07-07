@@ -37,7 +37,7 @@ private:
   const rosidl_message_type_support_t * type_support_handle_;
   const rosidl_message_type_support_t * introspection_support_handle_;
 
-  uint8_t * deserialized_message_buffer_;
+  std::vector<uint8_t> deserialized_message_buffer_;
   MessageDataBuffer data_buffer_;
 
 public:
@@ -67,9 +67,9 @@ public:
       static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
       introspection_support_handle_
       ->data);
-    deserialized_message_buffer_ = new uint8_t[members->size_of_];
+    deserialized_message_buffer_.resize(members->size_of_);
     members->init_function(
-      deserialized_message_buffer_,
+      deserialized_message_buffer_.data(),
       rosidl_runtime_cpp::MessageInitialization::ALL);
   }
 
@@ -79,9 +79,10 @@ public:
       static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
       introspection_support_handle_
       ->data);
-    members->fini_function(deserialized_message_buffer_);
-    delete[] deserialized_message_buffer_;
+    members->fini_function(deserialized_message_buffer_.data());
   }
+
+  TopicBuffer & operator=(TopicBuffer && other) = delete;
 
   void add_field(std::vector<std::string> member_path)
   {
@@ -101,7 +102,7 @@ public:
 
     quickplot::parse_generic_message(
       type_support_handle_, introspection_support_handle_,
-      *message, deserialized_message_buffer_, data_buffer_);
+      *message, deserialized_message_buffer_.data(), data_buffer_);
 
     received_data_.push_back(
       {
@@ -144,7 +145,7 @@ public:
     std::unique_lock<std::mutex> lock(topic_mutex_);
     std::vector<std::string> topics;
     topics.reserve(topic_buffers_.size());
-    for (auto kv : topic_buffers_) {
+    for (const auto & kv : topic_buffers_) {
       topics.push_back(kv.first);
     }
     return topics;
@@ -157,9 +158,8 @@ public:
     if (it == topic_buffers_.end()) {
       throw std::invalid_argument("Topic " + topic + " not active");
     }
-    auto [_, topic_buffer] = *it;
-    auto copy = std::vector(topic_buffer.received_data_);
-    topic_buffer.received_data_.clear();
+    auto copy = std::vector(it->second.received_data_);
+    it->second.received_data_.clear();
     return copy;
   }
 };
@@ -208,8 +208,8 @@ public:
     }
     ImGui::PopStyleVar();
 
-    static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode |
-      ImGuiWindowFlags_NoBackground;
+    // static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode |
+    //   ImGuiWindowFlags_NoBackground;
     ImGuiID dockspace_id = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
     ImGui::SetNextWindowDockID(dockspace_id, ImGuiCond_FirstUseEver);
 
@@ -285,32 +285,17 @@ public:
       if (ImPlot::BeginPlot(
           "speed", "t (header.stamp sec)", "m/s", ImVec2(-1, -1), ImPlotFlags_None))
       {
-        for (int y = 0; y < 3; ++y) {
-          if (ImPlot::BeginDragDropTargetY(y)) {
-            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-              auto topic_name = std::string(static_cast<char *>(payload->Data));
-              node_->add_topic_field(
-                topic_name, available_topics_to_types_[topic_name], {"data",
-                  "speed"});
-            }
-            ImPlot::EndDragDropTarget();
-          }
-        }
         for (const auto & topic : node_->active_topics()) {
           auto new_data = node_->take(topic);
-          if (new_data.empty()) {
-            continue;
-          }
-
           auto [entry, _] = active_topics_to_data_.try_emplace(topic);
-          auto [plot_topic, plot_data] = *entry;
+          auto & [plot_topic, plot_data] = *entry;
 
-          plot_data.values.resize(new_data[0].value.size());
+          plot_data.values.resize(1);
 
           for (const auto & item : new_data) {
             plot_data.times.push_back(item.t.seconds());
             for (size_t i = 0; i < item.value.size(); i++) {
-              plot_data.values[i].push_back(item.value[i]);
+              plot_data.values[0].push_back(item.value[i]);
             }
           }
 
@@ -319,6 +304,15 @@ public:
               topic.c_str(), plot_data.times.data(), plot_data.values[i].data(),
               plot_data.times.size());
           }
+        }
+        if (ImPlot::BeginDragDropTarget()) {
+          if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+            auto topic_name = std::string(static_cast<char *>(payload->Data));
+            node_->add_topic_field(
+              topic_name, available_topics_to_types_[topic_name], {"data",
+                "speed"});
+          }
+          ImPlot::EndDragDropTarget();
         }
         ImPlot::EndPlot();
       }
