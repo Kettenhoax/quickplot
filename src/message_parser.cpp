@@ -13,7 +13,7 @@ namespace quickplot
 
 double cast_numeric(void * message, MemberInfo info)
 {
-  auto n = static_cast<void*>(static_cast<uint8_t*>(message) + info.offset);
+  auto n = static_cast<void *>(static_cast<uint8_t *>(message) + info.offset);
   switch (info.type_id) {
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT:
       return *static_cast<float *>(n);
@@ -117,7 +117,8 @@ std::optional<MemberInfo> _find_member(
         continue;
       }
       auto info = _find_member(
-        member.members_, depth + 1, ++target_path_it, target_path_end, parent_offset + member.offset_);
+        member.members_, depth + 1, ++target_path_it, target_path_end,
+        parent_offset + member.offset_);
       --target_path_it;
       if (info.has_value()) {
         return info;
