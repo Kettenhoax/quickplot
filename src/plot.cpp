@@ -25,6 +25,8 @@ struct PlotData
   double value;
 };
 
+using PlotDataCircularBuffer = boost::circular_buffer<PlotData>;
+
 struct PlotDataBuffer
 {
   // path of member in message tree
@@ -36,16 +38,28 @@ struct PlotDataBuffer
 
   // lock this mutex when accessing data from the plot buffer
   std::mutex data_mutex;
-  std::vector<PlotData> data;
+  PlotDataCircularBuffer data;
   size_t start_index;
 
   PlotDataBuffer(
     std::vector<std::string> member_path, MemberInfo member_info,
     std::string axis_name)
-  : member_path(member_path), member_info(member_info), axis_name(axis_name), data_mutex(), data(),
+  : member_path(member_path), member_info(member_info), axis_name(axis_name), data_mutex(), data(100),
     start_index()
   {
 
+  }
+
+  void clear_data_up_to(rclcpp::Time t)
+  {
+    auto s = t.seconds();
+    while (!data.empty()) {
+      if (data.front().timestamp < s) {
+        data.pop_front();
+      } else {
+        break;
+      }
+    }
   }
 };
 
@@ -116,9 +130,15 @@ public:
     std::unique_lock<std::mutex> lock(buffers_mutex_);
     for (auto & buffer : buffers) {
       std::unique_lock<std::mutex> lock(buffer.data_mutex);
-      auto& plot_data = buffer.data.emplace_back();
-      plot_data.timestamp = stamp.seconds();
-      plot_data.value = cast_numeric(message_buffer_.data(), buffer.member_info);
+      buffer.data.push_back(
+        PlotData {
+          .timestamp = stamp.seconds(),
+          .value = cast_numeric(message_buffer_.data(), buffer.member_info)
+        });
+    }
+    if (!buffers.empty()) {
+      std::cout << "capacity " <<
+        buffers.front().data.capacity() << std::endl;
     }
   }
 };
@@ -155,6 +175,13 @@ public:
   }
 };
 
+ImPlotPoint circular_buffer_access(void * data, int idx)
+{
+  auto buffer = reinterpret_cast<PlotDataCircularBuffer *>(data);
+  const auto & item = buffer->at(idx);
+  return ImPlotPoint(item.timestamp, item.value);
+}
+
 class QuickPlot : public Application
 {
 private:
@@ -170,7 +197,7 @@ private:
 
 public:
   explicit QuickPlot(std::shared_ptr<BufferNode> _node)
-  : Application(1024, 768, "QuickPlot"), node_(_node)
+  : Application(1280, 768, "QuickPlot"), node_(_node)
   {
     set_vsync(true);
     ImGui::DisableViewports();
@@ -200,7 +227,6 @@ public:
     ImGui::SetNextWindowDockID(dockspace_id, ImGuiCond_FirstUseEver);
 
     if (graph_event_->check_and_clear()) {
-      RCLCPP_INFO(node_->get_logger(), "Graph event checked, reloading available topics");
       auto topics_and_types = node_->get_topic_names_and_types();
       for (const auto & [topic, types] : topics_and_types) {
         if (types.size() != 1) {
@@ -244,7 +270,8 @@ public:
       auto history_dur = rclcpp::Duration::from_seconds(history_sec);
       auto t = node_->now();
       auto end_sec = t.seconds();
-      auto start_sec = (t - history_dur).seconds();
+      auto start = t - history_dur;
+      auto start_sec = start.seconds();
 
       ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
       ImPlot::SetNextPlotLimitsY(-2, 2);
@@ -275,15 +302,12 @@ public:
           std::unique_lock<std::mutex> lock(subscription.buffers_mutex_);
           for (auto & buffer : subscription.buffers) {
             std::unique_lock<std::mutex> lock(buffer.data_mutex);
-            auto start =
-              static_cast<const double *>(static_cast<const void *>(buffer.data.data()));
-            ImPlot::PlotLine<double>(
+            buffer.clear_data_up_to(start);
+            ImPlot::PlotLineG(
               buffer.axis_name.c_str(),
-              start,
-              start + (offsetof(PlotData, value) / sizeof(PlotData::timestamp)),
-              buffer.data.size(),
-              0,
-              sizeof(PlotData));
+              &circular_buffer_access,
+              &buffer.data,
+              buffer.data.size());
           }
         }
         if (ImPlot::BeginDragDropTarget()) {
