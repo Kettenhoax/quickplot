@@ -20,7 +20,7 @@ include(FetchContent)
 FetchContent_Declare(quickplot GIT_REPOSITORY https://github.com/mahilab/mahi-gui.git) 
 FetchContent_MakeAvailable(quickplot)
 
-add_library(quickplot-utils src/typesupport_helpers.cpp)
+add_library(quickplot-utils src/message_parser.cpp)
 target_include_directories(quickplot-utils PRIVATE include)
 ament_target_dependencies(quickplot-utils
   rclcpp

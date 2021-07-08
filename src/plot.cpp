@@ -1,114 +1,125 @@
 #include <Mahi/Gui.hpp>
 #include <Mahi/Util.hpp>
 #include <mutex>
-#include <deque>
 #include <string>
 #include <utility>
 #include <memory>
+#include <list>
 #include <vector>
 #include <unordered_map>
 #include <rclcpp/rclcpp.hpp>
 #include <rosidl_typesupport_cpp/identifier.hpp>
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
-#include "quickplot/typesupport_helpers.hpp"
-#include "quickplot/parser.hpp"
+#include "quickplot/message_parser.hpp"
 #include <boost/circular_buffer.hpp>
 
 using mahi::gui::Application;
 using std::placeholders::_1;
-using std::vector;
-using std::string;
 
 namespace quickplot
 {
 
-struct MessageData
+struct PlotData
 {
-  rclcpp::Time t;
-  std::vector<double> value;
+  double timestamp;
+  double value;
 };
 
-class TopicBuffer
+struct PlotDataBuffer
+{
+  // path of member in message tree
+  // for example, the path of linear.x in geometry_msgs/Twist is {"linear", "x"}
+  std::vector<std::string> member_path;
+  // offset of member into message memory
+  MemberInfo member_info;
+  std::string axis_name;
+
+  // lock this mutex when accessing data from the plot buffer
+  std::mutex data_mutex;
+  std::vector<PlotData> data;
+  size_t start_index;
+
+  PlotDataBuffer(
+    std::vector<std::string> member_path, MemberInfo member_info,
+    std::string axis_name)
+  : member_path(member_path), member_info(member_info), axis_name(axis_name), data_mutex(), data(),
+    start_index()
+  {
+
+  }
+};
+
+class PlotSubscription
 {
 private:
-  std::string topic_type_;
-  std::shared_ptr<rcpputils::SharedLibrary> type_support_library_;
-  std::shared_ptr<rcpputils::SharedLibrary> introspection_support_library_;
-  const rosidl_message_type_support_t * type_support_handle_;
-  const rosidl_message_type_support_t * introspection_support_handle_;
-
-  std::vector<uint8_t> deserialized_message_buffer_;
-  MessageDataBuffer data_buffer_;
+  std::string topic_name_;
+  std::vector<uint8_t> message_buffer_;
+  std::shared_ptr<IntrospectionMessageDeserializer> deserializer_;
+  rclcpp::GenericSubscription::SharedPtr subscription_;
 
 public:
-  rclcpp::GenericSubscription::SharedPtr subscription;
-  std::vector<MessageData> received_data_;
+  std::mutex buffers_mutex_;
 
-  explicit TopicBuffer(std::string topic_type)
-  : topic_type_(topic_type)
+  // one data buffer per plotted member of a message
+  // using list instead of vector, since the emplace_back operation does not require
+  // the element to be MoveConstructible for resizing the array
+  std::list<PlotDataBuffer> buffers;
+
+  explicit PlotSubscription(
+    std::string topic_name,
+    rclcpp::node_interfaces::NodeTopicsInterface::SharedPtr topics_interface,
+    std::shared_ptr<IntrospectionMessageDeserializer> deserializer)
+  : topic_name_(topic_name), deserializer_(deserializer)
   {
-    type_support_library_ = quickplot::get_typesupport_library(
-      topic_type,
-      rosidl_typesupport_cpp::typesupport_identifier);
-    type_support_handle_ = quickplot::get_typesupport_handle(
-      topic_type,
-      rosidl_typesupport_cpp::typesupport_identifier,
-      type_support_library_);
-
-    introspection_support_library_ = quickplot::get_typesupport_library(
-      topic_type_,
-      rosidl_typesupport_introspection_cpp::typesupport_identifier);
-    introspection_support_handle_ = quickplot::get_typesupport_handle(
-      topic_type_,
-      rosidl_typesupport_introspection_cpp::typesupport_identifier,
-      introspection_support_library_);
-
-    auto members =
-      static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
-      introspection_support_handle_
-      ->data);
-    deserialized_message_buffer_.resize(members->size_of_);
-    members->init_function(
-      deserialized_message_buffer_.data(),
-      rosidl_runtime_cpp::MessageInitialization::ALL);
+    message_buffer_ = deserializer_->init_buffer();
+    subscription_ = rclcpp::create_generic_subscription(
+      topics_interface,
+      topic_name_,
+      deserializer_->topic_type(),
+      rclcpp::SensorDataQoS(),
+      std::bind(&PlotSubscription::receive_callback, this, _1),
+      rclcpp::SubscriptionOptionsWithAllocator<std::allocator<void>>()
+    );
   }
 
-  ~TopicBuffer()
+  ~PlotSubscription()
   {
-    auto members =
-      static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
-      introspection_support_handle_
-      ->data);
-    members->fini_function(deserialized_message_buffer_.data());
+    deserializer_->fini_buffer(message_buffer_);
   }
 
-  TopicBuffer & operator=(TopicBuffer && other) = delete;
+  // disable copy and move
+  PlotSubscription & operator=(PlotSubscription && other) = delete;
 
   void add_field(std::vector<std::string> member_path)
   {
-    data_buffer_.data.push_back(
-      {
-        member_path,
-        0.0
-      });
+    std::stringstream ss;
+    ss << topic_name_;
+    for (const auto & member : member_path) {
+      ss << "." << member;
+    }
+    auto member = deserializer_->find_member(member_path);
+    if (!member.has_value()) {
+      throw std::invalid_argument("Member not found");
+    }
+    std::unique_lock<std::mutex> lock(buffers_mutex_);
+    buffers.emplace_back(
+      member_path,
+      member.value(),
+      ss.str()
+    );
   }
 
-  void receive(std::shared_ptr<rclcpp::SerializedMessage> message)
+  void receive_callback(std::shared_ptr<rclcpp::SerializedMessage> message)
   {
-    // TODO(ZeilingerM) not synchronized with container
-    quickplot::MessageDataBuffer buffer;
-    auto & linear_x_data = buffer.data.emplace_back();
-    linear_x_data.member_path = {"twist", "linear", "x"};
-
-    quickplot::parse_generic_message(
-      type_support_handle_, introspection_support_handle_,
-      *message, deserialized_message_buffer_.data(), data_buffer_);
-
-    received_data_.push_back(
-      {
-        data_buffer_.stamp,
-        {data_buffer_.data[0].value},
-      });
+    deserializer_->deserialize(*message, message_buffer_.data());
+    rclcpp::Time stamp = deserializer_->get_header_stamp(message_buffer_.data());
+    std::unique_lock<std::mutex> lock(buffers_mutex_);
+    for (auto & buffer : buffers) {
+      std::unique_lock<std::mutex> lock(buffer.data_mutex);
+      auto& plot_data = buffer.data.emplace_back();
+      plot_data.timestamp = stamp.seconds();
+      plot_data.value = cast_numeric(message_buffer_.data(), buffer.member_info);
+    }
   }
 };
 
@@ -120,54 +131,28 @@ public:
   {
   }
 
-  mutable std::mutex topic_mutex_;
-  mutable std::mutex data_mutex_;
-  std::unordered_map<std::string, TopicBuffer> topic_buffers_;
+  std::mutex topic_mutex;
+  std::unordered_map<std::string,
+    std::shared_ptr<IntrospectionMessageDeserializer>> type_to_parsers_;
+  std::unordered_map<std::string, PlotSubscription> topics_to_subscriptions;
 
   void add_topic_field(
     std::string topic, std::string topic_type,
     std::vector<std::string> member_path)
   {
-    std::unique_lock<std::mutex> lock(topic_mutex_);
-    auto it = topic_buffers_.try_emplace(topic, topic_type);
-    auto & buffer = it.first->second;
-    buffer.add_field(member_path);
-    if (it.second) {
-      // only create subscription if entry was added first
-      buffer.subscription = this->create_generic_subscription(
-        topic, topic_type, rclcpp::SensorDataQoS(),
-        std::bind(&TopicBuffer::receive, &buffer, _1));
+    std::unique_lock<std::mutex> lock(topic_mutex);
+    // ensure message parser is initialized
+    if (type_to_parsers_.find(topic_type) == type_to_parsers_.end()) {
+      type_to_parsers_.emplace(
+        topic_type,
+        std::make_shared<IntrospectionMessageDeserializer>(topic_type));
     }
+    auto it = topics_to_subscriptions.try_emplace(
+      topic,
+      topic, get_node_topics_interface(), type_to_parsers_.at(topic_type));
+    auto & subscription = it.first->second;
+    subscription.add_field(member_path);
   }
-
-  std::vector<std::string> active_topics()
-  {
-    std::unique_lock<std::mutex> lock(topic_mutex_);
-    std::vector<std::string> topics;
-    topics.reserve(topic_buffers_.size());
-    for (const auto & kv : topic_buffers_) {
-      topics.push_back(kv.first);
-    }
-    return topics;
-  }
-
-  std::vector<MessageData> take(std::string topic)
-  {
-    std::unique_lock<std::mutex> lock(data_mutex_);
-    auto it = topic_buffers_.find(topic);
-    if (it == topic_buffers_.end()) {
-      throw std::invalid_argument("Topic " + topic + " not active");
-    }
-    auto copy = std::vector(it->second.received_data_);
-    it->second.received_data_.clear();
-    return copy;
-  }
-};
-
-struct PlotData
-{
-  std::vector<double> times;
-  std::vector<std::vector<double>> values;
 };
 
 class QuickPlot : public Application
@@ -180,6 +165,7 @@ private:
   std::vector<std::string> history_tick_labels_;
 
   std::unordered_map<std::string, std::string> available_topics_to_types_;
+  std::unordered_map<std::string, std::string> topic_type_to_parser_;
   std::unordered_map<std::string, PlotData> active_topics_to_data_;
 
 public:
@@ -285,24 +271,19 @@ public:
       if (ImPlot::BeginPlot(
           "speed", "t (header.stamp sec)", "m/s", ImVec2(-1, -1), ImPlotFlags_None))
       {
-        for (const auto & topic : node_->active_topics()) {
-          auto new_data = node_->take(topic);
-          auto [entry, _] = active_topics_to_data_.try_emplace(topic);
-          auto & [plot_topic, plot_data] = *entry;
-
-          plot_data.values.resize(1);
-
-          for (const auto & item : new_data) {
-            plot_data.times.push_back(item.t.seconds());
-            for (size_t i = 0; i < item.value.size(); i++) {
-              plot_data.values[0].push_back(item.value[i]);
-            }
-          }
-
-          for (size_t i = 0; i < plot_data.values.size(); i++) {
-            ImPlot::PlotLine(
-              topic.c_str(), plot_data.times.data(), plot_data.values[i].data(),
-              plot_data.times.size());
+        for (auto & [_, subscription] : node_->topics_to_subscriptions) {
+          std::unique_lock<std::mutex> lock(subscription.buffers_mutex_);
+          for (auto & buffer : subscription.buffers) {
+            std::unique_lock<std::mutex> lock(buffer.data_mutex);
+            auto start =
+              static_cast<const double *>(static_cast<const void *>(buffer.data.data()));
+            ImPlot::PlotLine<double>(
+              buffer.axis_name.c_str(),
+              start,
+              start + (offsetof(PlotData, value) / sizeof(PlotData::timestamp)),
+              buffer.data.size(),
+              0,
+              sizeof(PlotData));
           }
         }
         if (ImPlot::BeginDragDropTarget()) {
