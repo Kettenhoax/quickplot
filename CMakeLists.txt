@@ -12,6 +12,7 @@ endif()
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(yaml_cpp_vendor REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rosidl_typesupport_cpp REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
@@ -20,10 +21,13 @@ include(FetchContent)
 FetchContent_Declare(quickplot GIT_REPOSITORY https://github.com/mahilab/mahi-gui.git) 
 FetchContent_MakeAvailable(quickplot)
 
-add_library(quickplot-utils src/message_parser.cpp)
+add_library(quickplot-utils
+  src/message_parser.cpp
+  src/config.cpp)
 target_include_directories(quickplot-utils PRIVATE include)
 ament_target_dependencies(quickplot-utils
   rclcpp
+  yaml_cpp_vendor
   std_msgs
   rosidl_typesupport_cpp
   rosidl_typesupport_introspection_cpp)
@@ -55,6 +59,10 @@ if(BUILD_TESTING)
     rosidl_typesupport_introspection_cpp
     geometry_msgs
     nav_msgs)
+
+  ament_add_gtest(test_config test/test_config.cpp WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  target_include_directories(test_config PRIVATE include)
+  target_link_libraries(test_config quickplot-utils)
 endif()
 
 install(TARGETS ${PROJECT_NAME} EXPORT ${PROJECT_NAME}

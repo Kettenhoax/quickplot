@@ -4,13 +4,16 @@
 #include <string>
 #include <utility>
 #include <memory>
+#include <deque>
 #include <list>
 #include <vector>
 #include <unordered_map>
+#include <filesystem>
 #include <rclcpp/rclcpp.hpp>
 #include <rosidl_typesupport_cpp/identifier.hpp>
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
 #include "quickplot/message_parser.hpp"
+#include "quickplot/config.hpp"
 #include <boost/circular_buffer.hpp>
 
 using mahi::gui::Application;
@@ -43,8 +46,9 @@ struct PlotDataBuffer
 
   PlotDataBuffer(
     std::vector<std::string> member_path, MemberInfo member_info,
-    std::string axis_name)
-  : member_path(member_path), member_info(member_info), axis_name(axis_name), data_mutex(), data(100),
+    std::string axis_name, size_t capacity)
+  : member_path(member_path), member_info(member_info), axis_name(axis_name), data_mutex(), data(
+      capacity),
     start_index()
   {
 
@@ -52,6 +56,7 @@ struct PlotDataBuffer
 
   void clear_data_up_to(rclcpp::Time t)
   {
+    std::unique_lock<std::mutex> lock(data_mutex);
     auto s = t.seconds();
     while (!data.empty()) {
       if (data.front().timestamp < s) {
@@ -104,7 +109,7 @@ public:
   // disable copy and move
   PlotSubscription & operator=(PlotSubscription && other) = delete;
 
-  void add_field(std::vector<std::string> member_path)
+  void add_field(std::vector<std::string> member_path, size_t capacity)
   {
     std::stringstream ss;
     ss << topic_name_;
@@ -119,7 +124,8 @@ public:
     buffers.emplace_back(
       member_path,
       member.value(),
-      ss.str()
+      ss.str(),
+      capacity
     );
   }
 
@@ -130,23 +136,22 @@ public:
     std::unique_lock<std::mutex> lock(buffers_mutex_);
     for (auto & buffer : buffers) {
       std::unique_lock<std::mutex> lock(buffer.data_mutex);
+      if (buffer.data.full()) {
+        buffer.data.resize(buffer.data.size() * 2);
+      }
       buffer.data.push_back(
         PlotData {
           .timestamp = stamp.seconds(),
           .value = cast_numeric(message_buffer_.data(), buffer.member_info)
         });
     }
-    if (!buffers.empty()) {
-      std::cout << "capacity " <<
-        buffers.front().data.capacity() << std::endl;
-    }
   }
 };
 
-class BufferNode : public rclcpp::Node
+class QuickPlotNode : public rclcpp::Node
 {
 public:
-  BufferNode()
+  QuickPlotNode()
   : Node("quickplot")
   {
   }
@@ -171,7 +176,8 @@ public:
       topic,
       topic, get_node_topics_interface(), type_to_parsers_.at(topic_type));
     auto & subscription = it.first->second;
-    subscription.add_field(member_path);
+    size_t capacity = 10; // TODO(ZeilingerM) compute capacity from expected frequencies
+    subscription.add_field(member_path, capacity);
   }
 };
 
@@ -185,9 +191,10 @@ ImPlotPoint circular_buffer_access(void * data, int idx)
 class QuickPlot : public Application
 {
 private:
-  std::shared_ptr<BufferNode> node_;
+  std::shared_ptr<QuickPlotNode> node_;
   rclcpp::Event::SharedPtr graph_event_;
 
+  double history_length_;
   std::vector<double> history_tick_values_;
   std::vector<std::string> history_tick_labels_;
 
@@ -195,8 +202,10 @@ private:
   std::unordered_map<std::string, std::string> topic_type_to_parser_;
   std::unordered_map<std::string, PlotData> active_topics_to_data_;
 
+  std::deque<TopicPlotConfig> untyped_topic_queue_;
+
 public:
-  explicit QuickPlot(std::shared_ptr<BufferNode> _node)
+  explicit QuickPlot(std::shared_ptr<QuickPlotNode> _node)
   : Application(1280, 768, "QuickPlot"), node_(_node)
   {
     set_vsync(true);
@@ -204,6 +213,59 @@ public:
     ImGui::EnableDocking();
     graph_event_ = node_->get_graph_event();
     graph_event_->set(); // set manually to trigger initial topics query
+
+    auto config_path = get_default_config_path();
+    ApplicationConfig config;
+    if (std::filesystem::exists(config_path)) {
+      config = load_config(config_path);
+    } else {
+      config = default_config();
+    }
+    apply_config(config);
+  }
+
+  void apply_config(ApplicationConfig config)
+  {
+    history_length_ = config.history_length;
+    std::copy(
+      config.topic_plots.begin(), config.topic_plots.end(),
+      std::back_inserter(untyped_topic_queue_));
+    add_topics_from_queue();
+  }
+
+  void add_topics_from_queue()
+  {
+    for (auto it = untyped_topic_queue_.begin(); it != untyped_topic_queue_.end(); ) {
+      auto type_it = available_topics_to_types_.find(it->topic_name);
+      if (type_it != available_topics_to_types_.end()) {
+        for (const auto & field : it->members) {
+          node_->add_topic_field(it->topic_name, type_it->second, field.path);
+        }
+        it = untyped_topic_queue_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  ApplicationConfig collect_config()
+  {
+    ApplicationConfig config;
+    config.history_length = history_length_;
+    {
+      std::lock_guard<std::mutex> lock(node_->topic_mutex);
+      for (const auto &[topic_name, subscription] : node_->topics_to_subscriptions) {
+        auto & topic_plot = config.topic_plots.emplace_back();
+        topic_plot.topic_name = topic_name;
+        for (const auto & buffer : subscription.buffers) {
+          topic_plot.members.push_back(
+            MessageMemberPlotConfig {
+              .path = buffer.member_path
+            });
+        }
+      }
+    }
+    return config;
   }
 
   void update() override
@@ -214,15 +276,23 @@ public:
     ImGui::SetNextWindowSize(ImVec2(vec2.x, vec2.y), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.0f);
 
-    if (!ImGui::Begin("QuickPlot", nullptr, ImGuiWindowFlags_NoTitleBar)) {
+    if (!ImGui::Begin("QuickPlot", nullptr, ImGuiWindowFlags_MenuBar)) {
       // Early out if the window is collapsed, as an optimization.
       ImGui::End();
       return;
     }
     ImGui::PopStyleVar();
 
-    // static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode |
-    //   ImGuiWindowFlags_NoBackground;
+    if (ImGui::BeginMenuBar()) {
+      if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Save config", "Ctrl+S")) {
+          save_config(collect_config(), get_default_config_path());
+        }
+        ImGui::EndMenu();
+      }
+      ImGui::EndMenuBar();
+    }
+
     ImGuiID dockspace_id = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
     ImGui::SetNextWindowDockID(dockspace_id, ImGuiCond_FirstUseEver);
 
@@ -244,16 +314,18 @@ public:
           }
         }
       }
+      add_topics_from_queue();
     }
 
     {
-      ImGui::BeginChild("left pane", ImVec2(150, 0), true, ImGuiWindowFlags_NoMove);
+      ImGui::BeginChild("topic list", ImVec2(150, 0), true, ImGuiWindowFlags_NoMove);
       for (const auto & topic : available_topics_to_types_) {
         ImGui::Text("%s", topic.first.c_str());
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
           ImGui::SetDragDropPayload("topic_name", topic.first.c_str(), topic.first.size());
-          // ImPlot::ItemIcon(dnd[k].Color); ImGui::SameLine();
-          ImGui::Text("Draggin %s", topic.first.c_str());
+          ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
+          ImGui::SameLine();
+          ImGui::Text("Dragging %s", topic.first.c_str());
           ImGui::EndDragDropSource();
         }
       }
@@ -265,9 +337,8 @@ public:
         "plot view", ImVec2(
           0,
           -ImGui::GetFrameHeightWithSpacing()), ImGuiWindowFlags_NoMove);
-      static float history_sec = 10.0f;
-      ImGui::SliderFloat("history", &history_sec, 1, 30, "%.1f s");
-      auto history_dur = rclcpp::Duration::from_seconds(history_sec);
+      ImGui::SliderDouble("history", &history_length_, 1, 30, "%.1f s");
+      auto history_dur = rclcpp::Duration::from_seconds(history_length_);
       auto t = node_->now();
       auto end_sec = t.seconds();
       auto start = t - history_dur;
@@ -276,7 +347,7 @@ public:
       ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
       ImPlot::SetNextPlotLimitsY(-2, 2);
 
-      size_t n_ticks = history_sec;
+      size_t n_ticks = history_length_;
       if (n_ticks != history_tick_values_.size()) {
         history_tick_labels_.clear();
         history_tick_values_.clear();
@@ -296,18 +367,20 @@ public:
         history_tick_values_.size(), tick_cstrings.data());
 
       if (ImPlot::BeginPlot(
-          "speed", "t (header.stamp sec)", "m/s", ImVec2(-1, -1), ImPlotFlags_None))
+          "plot1", "t (header.stamp sec)", nullptr, ImVec2(-1, -1), ImPlotFlags_None))
       {
         for (auto & [_, subscription] : node_->topics_to_subscriptions) {
           std::unique_lock<std::mutex> lock(subscription.buffers_mutex_);
           for (auto & buffer : subscription.buffers) {
-            std::unique_lock<std::mutex> lock(buffer.data_mutex);
             buffer.clear_data_up_to(start);
-            ImPlot::PlotLineG(
-              buffer.axis_name.c_str(),
-              &circular_buffer_access,
-              &buffer.data,
-              buffer.data.size());
+            {
+              std::unique_lock<std::mutex> lock(buffer.data_mutex);
+              ImPlot::PlotLineG(
+                buffer.axis_name.c_str(),
+                &circular_buffer_access,
+                &buffer.data,
+                buffer.data.size());
+            }
           }
         }
         if (ImPlot::BeginDragDropTarget()) {
@@ -332,11 +405,12 @@ public:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<quickplot::BufferNode>();
+  auto node = std::make_shared<quickplot::QuickPlotNode>();
   std::thread ros_thread([ = ] {
       rclcpp::spin(node);
     });
   quickplot::QuickPlot app(node);
   app.run();
+  ros_thread.join();
   return EXIT_SUCCESS;
 }

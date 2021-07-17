@@ -1,0 +1,5 @@
+history_length: 5
+topic_plots:
+  - topic_name: test
+    members:
+      - path: [inner, value]
