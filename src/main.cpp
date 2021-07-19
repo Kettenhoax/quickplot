@@ -1,5 +1,9 @@
-#include <Mahi/Gui.hpp>
-#include <Mahi/Util.hpp>
+#include "implot.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include <GL/glew.h>
+#include <GLFW/glfw3.h>
+
 #include <mutex>
 #include <string>
 #include <utility>
@@ -16,7 +20,6 @@
 #include "quickplot/config.hpp"
 #include <boost/circular_buffer.hpp>
 
-using mahi::gui::Application;
 using std::placeholders::_1;
 
 namespace quickplot
@@ -188,7 +191,12 @@ ImPlotPoint circular_buffer_access(void * data, int idx)
   return ImPlotPoint(item.timestamp, item.value);
 }
 
-class QuickPlot : public Application
+static void glfw_error_callback(int error, const char * description)
+{
+  fprintf(stderr, "Glfw Error %d: %s\n", error, description);
+}
+
+class Application
 {
 private:
   std::shared_ptr<QuickPlotNode> node_;
@@ -205,12 +213,9 @@ private:
   std::deque<TopicPlotConfig> untyped_topic_queue_;
 
 public:
-  explicit QuickPlot(std::shared_ptr<QuickPlotNode> _node)
-  : Application(1280, 768, "QuickPlot"), node_(_node)
+  explicit Application(std::shared_ptr<QuickPlotNode> _node)
+  : node_(_node)
   {
-    set_vsync(true);
-    ImGui::DisableViewports();
-    ImGui::EnableDocking();
     graph_event_ = node_->get_graph_event();
     graph_event_->set(); // set manually to trigger initial topics query
 
@@ -268,21 +273,13 @@ public:
     return config;
   }
 
-  void update() override
+  void update()
   {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    auto vec2 = get_window_size();
-    ImGui::SetNextWindowPos({0, 0}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(vec2.x, vec2.y), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.0f);
-
     if (!ImGui::Begin("QuickPlot", nullptr, ImGuiWindowFlags_MenuBar)) {
       // Early out if the window is collapsed, as an optimization.
       ImGui::End();
       return;
     }
-    ImGui::PopStyleVar();
-
     if (ImGui::BeginMenuBar()) {
       if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("Save config", "Ctrl+S")) {
@@ -292,9 +289,6 @@ public:
       }
       ImGui::EndMenuBar();
     }
-
-    ImGuiID dockspace_id = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
-    ImGui::SetNextWindowDockID(dockspace_id, ImGuiCond_FirstUseEver);
 
     if (graph_event_->check_and_clear()) {
       auto topics_and_types = node_->get_topic_names_and_types();
@@ -336,8 +330,8 @@ public:
       ImGui::BeginChild(
         "plot view", ImVec2(
           0,
-          -ImGui::GetFrameHeightWithSpacing()), ImGuiWindowFlags_NoMove);
-      ImGui::SliderDouble("history", &history_length_, 1, 30, "%.1f s");
+          -ImGui::GetFrameHeightWithSpacing()), false, ImGuiWindowFlags_NoMove);
+      ImGui::InputDouble("history", &history_length_, 1, 10, "%.1f s");
       auto history_dur = rclcpp::Duration::from_seconds(history_length_);
       auto t = node_->now();
       auto end_sec = t.seconds();
@@ -345,6 +339,8 @@ public:
       auto start_sec = start.seconds();
 
       ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
+
+      // TODO configurable limits per-axis
       ImPlot::SetNextPlotLimitsY(-2, 2);
 
       size_t n_ticks = history_length_;
@@ -398,6 +394,91 @@ public:
     }
     ImGui::End();
   }
+
+  int run()
+  {
+    glfwSetErrorCallback(glfw_error_callback);
+    if (!glfwInit()) {
+      return EXIT_FAILURE;
+    }
+
+    const char * glsl_version = "#version 150";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glEnable(GL_MULTISAMPLE);
+
+    GLFWwindow * window = glfwCreateWindow(1280, 720, "imgui_vendor example", NULL, NULL);
+    if (window == NULL) {
+      return EXIT_FAILURE;
+    }
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(1); // enable vsync
+
+    bool err = glewInit() != GLEW_OK;
+    if (err) {
+      fprintf(stderr, "Failed to initialize OpenGL loader!\n");
+      return EXIT_FAILURE;
+    }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImPlot::CreateContext();
+    ImGuiIO & io = ImGui::GetIO();
+    io.ConfigFlags &= ~(ImGuiConfigFlags_ViewportsEnable);
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    ImGui::StyleColorsClassic();
+    // Setup Platform/Renderer backends
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init(glsl_version);
+
+    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+
+    while (rclcpp::ok()) {
+      if (glfwWindowShouldClose(window)) {
+        // ensure ROS finishes up if window is closed
+        rclcpp::shutdown();
+        break;
+      }
+      // Poll and handle events (inputs, window resize, etc.)
+      // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
+      // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
+      // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
+      // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
+      glfwPollEvents();
+
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+
+      auto dock_id = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
+      ImGui::SetNextWindowDockID(dock_id);
+      update();
+      ImGui::Render();
+      int display_w, display_h;
+      glfwGetFramebufferSize(window, &display_w, &display_h);
+      glViewport(0, 0, display_w, display_h);
+      glClearColor(
+        clear_color.x * clear_color.w, clear_color.y * clear_color.w,
+        clear_color.z * clear_color.w, clear_color.w);
+      glClear(GL_COLOR_BUFFER_BIT);
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+      glfwSwapBuffers(window);
+    }
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImPlot::DestroyContext();
+    ImGui::DestroyContext();
+
+    glfwDestroyWindow(window);
+    glfwTerminate();
+
+    return EXIT_SUCCESS;
+  }
 };
 
 } // namespace quickplot
@@ -409,8 +490,8 @@ int main(int argc, char ** argv)
   std::thread ros_thread([ = ] {
       rclcpp::spin(node);
     });
-  quickplot::QuickPlot app(node);
-  app.run();
+  quickplot::Application app(node);
+  auto exit_code = app.run();
   ros_thread.join();
-  return EXIT_SUCCESS;
+  return exit_code;
 }
