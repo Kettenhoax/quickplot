@@ -1,6 +1,6 @@
-#include "implot.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
+#include "implot.h" // NOLINT
+#include "imgui_impl_glfw.h" // NOLINT
+#include "imgui_impl_opengl3.h" // NOLINT
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
@@ -25,13 +25,7 @@ using std::placeholders::_1;
 namespace quickplot
 {
 
-struct PlotData
-{
-  double timestamp;
-  double value;
-};
-
-using PlotDataCircularBuffer = boost::circular_buffer<PlotData>;
+using PlotDataCircularBuffer = boost::circular_buffer<ImPlotPoint>;
 
 struct PlotDataBuffer
 {
@@ -62,7 +56,7 @@ struct PlotDataBuffer
     std::unique_lock<std::mutex> lock(data_mutex);
     auto s = t.seconds();
     while (!data.empty()) {
-      if (data.front().timestamp < s) {
+      if (data.front().x < s) {
         data.pop_front();
       } else {
         break;
@@ -143,10 +137,9 @@ public:
         buffer.data.resize(buffer.data.size() * 2);
       }
       buffer.data.push_back(
-        PlotData {
-          .timestamp = stamp.seconds(),
-          .value = cast_numeric(message_buffer_.data(), buffer.member_info)
-        });
+        ImPlotPoint(
+          stamp.seconds(),
+          cast_numeric(message_buffer_.data(), buffer.member_info)));
     }
   }
 };
@@ -187,8 +180,7 @@ public:
 ImPlotPoint circular_buffer_access(void * data, int idx)
 {
   auto buffer = reinterpret_cast<PlotDataCircularBuffer *>(data);
-  const auto & item = buffer->at(idx);
-  return ImPlotPoint(item.timestamp, item.value);
+  return buffer->at(idx);
 }
 
 static void glfw_error_callback(int error, const char * description)
@@ -208,7 +200,7 @@ private:
 
   std::unordered_map<std::string, std::string> available_topics_to_types_;
   std::unordered_map<std::string, std::string> topic_type_to_parser_;
-  std::unordered_map<std::string, PlotData> active_topics_to_data_;
+  std::unordered_map<std::string, ImPlotPoint> active_topics_to_data_;
 
   std::deque<TopicPlotConfig> untyped_topic_queue_;
 

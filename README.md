@@ -7,3 +7,6 @@ TODOs
 * [ ] filter topics/types/members in list
 * [ ] configure min/max ranges
 * [ ] show error states on topic communication
+* [ ] multiple plots
+* [ ] multiple axes
+
