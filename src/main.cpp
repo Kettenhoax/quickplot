@@ -407,7 +407,7 @@ public:
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    glEnable(GL_MULTISAMPLE);
+    glfwWindowHint(GLFW_SAMPLES, 8);
 
     GLFWwindow * window = glfwCreateWindow(1280, 720, "imgui_vendor example", NULL, NULL);
     if (window == NULL) {
