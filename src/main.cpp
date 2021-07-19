@@ -134,7 +134,7 @@ public:
     for (auto & buffer : buffers) {
       std::unique_lock<std::mutex> lock(buffer.data_mutex);
       if (buffer.data.full()) {
-        buffer.data.resize(buffer.data.size() * 2);
+        buffer.data.set_capacity(buffer.data.capacity() * 2);
       }
       buffer.data.push_back(
         ImPlotPoint(
@@ -401,7 +401,7 @@ public:
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     glfwWindowHint(GLFW_SAMPLES, 8);
 
-    GLFWwindow * window = glfwCreateWindow(1280, 720, "imgui_vendor example", NULL, NULL);
+    GLFWwindow * window = glfwCreateWindow(1280, 720, "quickplot", NULL, NULL);
     if (window == NULL) {
       return EXIT_FAILURE;
     }
