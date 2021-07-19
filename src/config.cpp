@@ -9,6 +9,7 @@
 
 namespace YAML
 {
+
 template<>
 struct convert<quickplot::MessageMemberPlotConfig>
 {
@@ -108,9 +109,14 @@ std::string get_home_directory()
   return homedir;
 }
 
+std::string get_default_config_directory()
+{
+  return get_home_directory() + "/.quickplot";
+}
+
 std::string get_default_config_path()
 {
-  return get_home_directory() + "/.quickplot/default.yaml";
+  return get_default_config_directory() + "/default.yaml";
 }
 
 void save_config(ApplicationConfig config, std::string path)

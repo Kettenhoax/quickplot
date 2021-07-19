@@ -23,6 +23,8 @@ struct ApplicationConfig
   std::vector<TopicPlotConfig> topic_plots;
 };
 
+std::string get_default_config_directory();
+
 std::string get_default_config_path();
 
 ApplicationConfig default_config();

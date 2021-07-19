@@ -194,7 +194,9 @@ private:
   std::shared_ptr<QuickPlotNode> node_;
   rclcpp::Event::SharedPtr graph_event_;
 
+  std::string imgui_ini_path_;
   double history_length_;
+  double edited_history_length_;
   std::vector<double> history_tick_values_;
   std::vector<std::string> history_tick_labels_;
 
@@ -219,11 +221,13 @@ public:
       config = default_config();
     }
     apply_config(config);
+    imgui_ini_path_ = get_default_config_directory() + "/imgui.ini";
   }
 
   void apply_config(ApplicationConfig config)
   {
     history_length_ = config.history_length;
+    edited_history_length_ = history_length_;
     std::copy(
       config.topic_plots.begin(), config.topic_plots.end(),
       std::back_inserter(untyped_topic_queue_));
@@ -265,23 +269,13 @@ public:
     return config;
   }
 
+  void save_application_config()
+  {
+    save_config(collect_config(), get_default_config_path());
+  }
+
   void update()
   {
-    if (!ImGui::Begin("QuickPlot", nullptr, ImGuiWindowFlags_MenuBar)) {
-      // Early out if the window is collapsed, as an optimization.
-      ImGui::End();
-      return;
-    }
-    if (ImGui::BeginMenuBar()) {
-      if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Save config", "Ctrl+S")) {
-          save_config(collect_config(), get_default_config_path());
-        }
-        ImGui::EndMenu();
-      }
-      ImGui::EndMenuBar();
-    }
-
     if (graph_event_->check_and_clear()) {
       auto topics_and_types = node_->get_topic_names_and_types();
       for (const auto & [topic, types] : topics_and_types) {
@@ -303,8 +297,7 @@ public:
       add_topics_from_queue();
     }
 
-    {
-      ImGui::BeginChild("topic list", ImVec2(150, 0), true, ImGuiWindowFlags_NoMove);
+    if (ImGui::Begin("topic list")) {
       for (const auto & topic : available_topics_to_types_) {
         ImGui::Text("%s", topic.first.c_str());
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
@@ -315,15 +308,15 @@ public:
           ImGui::EndDragDropSource();
         }
       }
-      ImGui::EndChild();
     }
-    ImGui::SameLine();
-    {
-      ImGui::BeginChild(
-        "plot view", ImVec2(
-          0,
-          -ImGui::GetFrameHeightWithSpacing()), false, ImGuiWindowFlags_NoMove);
-      ImGui::InputDouble("history", &history_length_, 1, 10, "%.1f s");
+    ImGui::End();
+    if (ImGui::Begin("plot view0")) {
+      ImGui::InputDouble(
+        "history", &edited_history_length_, 1, 10, "%.1f s",
+        ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_CharsNoBlank);
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
+        history_length_ = edited_history_length_;
+      }
       auto history_dur = rclcpp::Duration::from_seconds(history_length_);
       auto t = node_->now();
       auto end_sec = t.seconds();
@@ -331,18 +324,19 @@ public:
       auto start_sec = start.seconds();
 
       ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-
       // TODO configurable limits per-axis
       ImPlot::SetNextPlotLimitsY(-2, 2);
 
-      size_t n_ticks = history_length_;
-      if (n_ticks != history_tick_values_.size()) {
-        history_tick_labels_.clear();
-        history_tick_values_.clear();
-        for (int i = n_ticks; i >= 0; i--) {
-          history_tick_labels_.push_back(std::to_string(-i));
-          history_tick_values_.push_back(end_sec - i);
+      size_t n_ticks = static_cast<size_t>(history_length_);
+      history_tick_values_.resize(n_ticks);
+      if (n_ticks != history_tick_labels_.size()) {
+        history_tick_labels_.resize(n_ticks);
+        for (size_t i = 0; i < n_ticks; i++) {
+          history_tick_labels_[i] = std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
         }
+      }
+      for (size_t i = 0; i < n_ticks; i++) {
+        history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
       }
 
       std::vector<char const *> tick_cstrings;
@@ -355,7 +349,7 @@ public:
         history_tick_values_.size(), tick_cstrings.data());
 
       if (ImPlot::BeginPlot(
-          "plot1", "t (header.stamp sec)", nullptr, ImVec2(-1, -1), ImPlotFlags_None))
+          "plot0", "t (header.stamp sec)", nullptr, ImVec2(-1, -1), ImPlotFlags_None))
       {
         for (auto & [_, subscription] : node_->topics_to_subscriptions) {
           std::unique_lock<std::mutex> lock(subscription.buffers_mutex_);
@@ -382,7 +376,6 @@ public:
         }
         ImPlot::EndPlot();
       }
-      ImGui::EndChild();
     }
     ImGui::End();
   }
@@ -420,6 +413,7 @@ public:
     ImGuiIO & io = ImGui::GetIO();
     io.ConfigFlags &= ~(ImGuiConfigFlags_ViewportsEnable);
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.IniFilename = imgui_ini_path_.c_str();
 
     ImGui::StyleColorsClassic();
     // Setup Platform/Renderer backends
@@ -460,6 +454,9 @@ public:
 
       glfwSwapBuffers(window);
     }
+
+    // save before closing
+    save_application_config();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
