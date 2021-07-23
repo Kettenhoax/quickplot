@@ -1,20 +1,19 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <deque>
 #include <std_msgs/msg/header.hpp>
 #include <rosidl_typesupport_cpp/identifier.hpp>
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
 #include <rosidl_typesupport_introspection_cpp/field_types.hpp>
-#include <rosidl_typesupport_introspection_cpp/message_introspection.hpp>
 #include "quickplot/message_parser.hpp"
 
 namespace quickplot
 {
 
-double cast_numeric(void * message, MemberInfo info)
+double cast_numeric(void * n, uint8_t type_id)
 {
-  auto n = static_cast<void *>(static_cast<uint8_t *>(message) + info.offset);
-  switch (info.type_id) {
+  switch (type_id) {
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT:
       return *static_cast<float *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_DOUBLE:
@@ -38,31 +37,6 @@ double cast_numeric(void * message, MemberInfo info)
     default:
       throw std::invalid_argument("Unknown member type_id");
   }
-}
-
-std::optional<size_t> find_header_offset(
-  const rosidl_message_type_support_t * introspection_support)
-{
-  auto members =
-    static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(introspection_support
-    ->data);
-  for (size_t i = 0; i < members->member_count_; i++) {
-    // search only on first level of the member tree
-    const auto & member = members->members_[i];
-    if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
-      auto sub_members =
-        static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(member.
-        members_->data);
-      if (strcmp("header", member.name_) == 0) {
-        if (strcmp(sub_members->message_name_, "Header") == 0 && strcmp(
-            sub_members->message_namespace_, "std_msgs::msg") == 0)
-        {
-          return member.offset_;
-        }
-      }
-    }
-  }
-  return {};
 }
 
 bool is_numeric(uint8_t type_id)
@@ -93,12 +67,12 @@ bool is_numeric(uint8_t type_id)
   }
 }
 
-std::optional<MemberInfo> _find_member(
+std::optional<MessageMemberInfo> _find_member(
   const rosidl_message_type_support_t * introspection_support,
   size_t depth,
   std::vector<std::string>::const_iterator target_path_it,
   std::vector<std::string>::const_iterator target_path_end,
-  int64_t parent_offset)
+  uint32_t parent_offset)
 {
   assert(target_path_it != target_path_end);
   auto members =
@@ -131,7 +105,7 @@ std::optional<MemberInfo> _find_member(
       if (!is_numeric(member.type_id_)) {
         throw std::invalid_argument("Requested message member is not numeric");
       }
-      return MemberInfo {
+      return MessageMemberInfo {
         .offset = (parent_offset + member.offset_),
         .type_id = member.type_id_
       };
@@ -140,74 +114,61 @@ std::optional<MemberInfo> _find_member(
   return {};
 }
 
-IntrospectionMessageDeserializer::IntrospectionMessageDeserializer(std::string topic_type)
-: topic_type_(topic_type)
+MessageIntrospection::MessageIntrospection(std::string message_type) : message_type_(message_type)
 {
-  type_support_library_ = rclcpp::get_typesupport_library(
-    topic_type,
-    rosidl_typesupport_cpp::typesupport_identifier);
-  type_support_handle_ = rclcpp::get_typesupport_handle(
-    topic_type,
-    rosidl_typesupport_cpp::typesupport_identifier,
-    *type_support_library_);
-
   introspection_support_library_ = rclcpp::get_typesupport_library(
-    topic_type,
+    message_type,
     rosidl_typesupport_introspection_cpp::typesupport_identifier);
   introspection_support_handle_ = rclcpp::get_typesupport_handle(
-    topic_type,
+    message_type,
     rosidl_typesupport_introspection_cpp::typesupport_identifier,
     *introspection_support_library_);
-  deserializer_ = std::make_unique<rclcpp::SerializationBase>(type_support_handle_);
-  header_offset_ = find_header_offset(introspection_support_handle_);
 }
 
-std::string IntrospectionMessageDeserializer::topic_type() const
+std::string MessageIntrospection::message_type() const
 {
-  return topic_type_;
+  return message_type_;
 }
 
-std::vector<uint8_t> IntrospectionMessageDeserializer::init_buffer() const
+const rosidl_typesupport_introspection_cpp::MessageMembers * MessageIntrospection::members() const
 {
-  std::vector<uint8_t> buffer;
-  auto members =
-    static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
-    introspection_support_handle_
-    ->data);
-  buffer.resize(members->size_of_);
-  members->init_function(
-    buffer.data(),
-    rosidl_runtime_cpp::MessageInitialization::ALL);
-  return buffer;
+  return static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
+    introspection_support_handle_->data);
 }
 
-void IntrospectionMessageDeserializer::fini_buffer(std::vector<uint8_t> & buffer) const
+std::optional<size_t> MessageIntrospection::get_header_offset() const
 {
-  auto members =
-    static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
-    introspection_support_handle_
-    ->data);
-  members->fini_function(buffer.data());
+  auto m = members();
+  for (size_t i = 0; i < m->member_count_; i++) {
+    // search only on first level of the member tree
+    const auto & member = m->members_[i];
+    if (member.type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+      auto sub_members =
+        static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(member.
+        members_->data);
+      if (strcmp("header", member.name_) == 0) {
+        if (strcmp(sub_members->message_name_, "Header") == 0 && strcmp(
+            sub_members->message_namespace_, "std_msgs::msg") == 0)
+        {
+          return member.offset_;
+        }
+      }
+    }
+  }
+  return {};
 }
 
-void IntrospectionMessageDeserializer::deserialize(
-  const rclcpp::SerializedMessage & message,
-  void * buffer) const
+MemberIterator MessageIntrospection::begin_member_infos() const
 {
-  deserializer_->deserialize_message(&message, buffer);
+  return MemberIterator(introspection_support_handle_);
 }
 
-
-rclcpp::Time IntrospectionMessageDeserializer::get_header_stamp(void * buffer) const
+MemberIterator MessageIntrospection::end_member_infos() const
 {
-  assert(header_offset_.has_value());
-  auto bytes = static_cast<uint8_t *>(buffer);
-  auto header =
-    static_cast<std_msgs::msg::Header *>(static_cast<void *>(bytes + header_offset_.value()));
-  return header->stamp;
+  return MemberIterator(nullptr);
 }
 
-std::optional<MemberInfo> IntrospectionMessageDeserializer::find_member(
+std::optional<MessageMemberInfo> MessageIntrospection::get_member_info(
   std::vector<std::string> member_path) const
 {
   if (member_path.empty()) {
@@ -222,6 +183,65 @@ std::optional<MemberInfo> IntrospectionMessageDeserializer::find_member(
   }
   return _find_member(
     introspection_support_handle_, 0, member_path.cbegin(), member_path.cend(), 0);
+}
+
+IntrospectionMessageDeserializer::IntrospectionMessageDeserializer(
+  std::shared_ptr<MessageIntrospection> introspection)
+: introspection_(introspection)
+{
+  type_support_library_ = rclcpp::get_typesupport_library(
+    introspection_->message_type(),
+    rosidl_typesupport_cpp::typesupport_identifier);
+  type_support_handle_ = rclcpp::get_typesupport_handle(
+    introspection_->message_type(),
+    rosidl_typesupport_cpp::typesupport_identifier,
+    *type_support_library_);
+
+  deserializer_ = std::make_unique<rclcpp::SerializationBase>(type_support_handle_);
+  header_offset_ = introspection_->get_header_offset();
+}
+
+std::string IntrospectionMessageDeserializer::message_type() const
+{
+  return introspection_->message_type();
+}
+
+std::vector<uint8_t> IntrospectionMessageDeserializer::init_buffer() const
+{
+  std::vector<uint8_t> buffer;
+  auto members = introspection_->members();
+  buffer.resize(members->size_of_);
+  members->init_function(
+    buffer.data(),
+    rosidl_runtime_cpp::MessageInitialization::ALL);
+  return buffer;
+}
+
+void IntrospectionMessageDeserializer::fini_buffer(std::vector<uint8_t> & buffer) const
+{
+  introspection_->members()->fini_function(buffer.data());
+}
+
+void IntrospectionMessageDeserializer::deserialize(
+  const rclcpp::SerializedMessage & serialized_message,
+  void * message) const
+{
+  deserializer_->deserialize_message(&serialized_message, message);
+}
+
+rclcpp::Time IntrospectionMessageDeserializer::get_header_stamp(void * message) const
+{
+  assert(header_offset_.has_value());
+  auto bytes = static_cast<uint8_t *>(message);
+  auto header =
+    static_cast<std_msgs::msg::Header *>(static_cast<void *>(bytes + header_offset_.value()));
+  return header->stamp;
+}
+
+double IntrospectionMessageDeserializer::get_numeric(void * message, MessageMemberInfo info) const
+{
+  auto bytes = reinterpret_cast<uint8_t *>(message) + info.offset;
+  return cast_numeric(bytes, info.type_id);
 }
 
 } // namespace quickplot

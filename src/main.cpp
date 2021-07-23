@@ -29,24 +29,14 @@ using PlotDataCircularBuffer = boost::circular_buffer<ImPlotPoint>;
 
 struct PlotDataBuffer
 {
-  // path of member in message tree
-  // for example, the path of linear.x in geometry_msgs/Twist is {"linear", "x"}
-  std::vector<std::string> member_path;
-  // offset of member into message memory
-  MemberInfo member_info;
-  std::string axis_name;
+  MessageMember member;
 
   // lock this mutex when accessing data from the plot buffer
   std::mutex data_mutex;
   PlotDataCircularBuffer data;
-  size_t start_index;
 
-  PlotDataBuffer(
-    std::vector<std::string> member_path, MemberInfo member_info,
-    std::string axis_name, size_t capacity)
-  : member_path(member_path), member_info(member_info), axis_name(axis_name), data_mutex(), data(
-      capacity),
-    start_index()
+  PlotDataBuffer(MessageMember _member, size_t capacity)
+  : member(_member), data_mutex(), data(capacity)
   {
 
   }
@@ -68,7 +58,6 @@ struct PlotDataBuffer
 class PlotSubscription
 {
 private:
-  std::string topic_name_;
   std::vector<uint8_t> message_buffer_;
   std::shared_ptr<IntrospectionMessageDeserializer> deserializer_;
   rclcpp::GenericSubscription::SharedPtr subscription_;
@@ -85,13 +74,13 @@ public:
     std::string topic_name,
     rclcpp::node_interfaces::NodeTopicsInterface::SharedPtr topics_interface,
     std::shared_ptr<IntrospectionMessageDeserializer> deserializer)
-  : topic_name_(topic_name), deserializer_(deserializer)
+  : deserializer_(deserializer)
   {
     message_buffer_ = deserializer_->init_buffer();
     subscription_ = rclcpp::create_generic_subscription(
       topics_interface,
-      topic_name_,
-      deserializer_->topic_type(),
+      topic_name,
+      deserializer_->message_type(),
       rclcpp::SensorDataQoS(),
       std::bind(&PlotSubscription::receive_callback, this, _1),
       rclcpp::SubscriptionOptionsWithAllocator<std::allocator<void>>()
@@ -106,22 +95,11 @@ public:
   // disable copy and move
   PlotSubscription & operator=(PlotSubscription && other) = delete;
 
-  void add_field(std::vector<std::string> member_path, size_t capacity)
+  void add_field(MessageMember member, size_t capacity)
   {
-    std::stringstream ss;
-    ss << topic_name_;
-    for (const auto & member : member_path) {
-      ss << "." << member;
-    }
-    auto member = deserializer_->find_member(member_path);
-    if (!member.has_value()) {
-      throw std::invalid_argument("Member not found");
-    }
     std::unique_lock<std::mutex> lock(buffers_mutex_);
     buffers.emplace_back(
-      member_path,
-      member.value(),
-      ss.str(),
+      member,
       capacity
     );
   }
@@ -139,7 +117,7 @@ public:
       buffer.data.push_back(
         ImPlotPoint(
           stamp.seconds(),
-          cast_numeric(message_buffer_.data(), buffer.member_info)));
+          deserializer_->get_numeric(message_buffer_.data(), buffer.member.info)));
     }
   }
 };
@@ -158,22 +136,24 @@ public:
   std::unordered_map<std::string, PlotSubscription> topics_to_subscriptions;
 
   void add_topic_field(
-    std::string topic, std::string topic_type,
-    std::vector<std::string> member_path)
+    std::string topic,
+    std::shared_ptr<MessageIntrospection> introspection,
+    MessageMember member)
   {
     std::unique_lock<std::mutex> lock(topic_mutex);
+    auto message_type = introspection->message_type();
     // ensure message parser is initialized
-    if (type_to_parsers_.find(topic_type) == type_to_parsers_.end()) {
+    if (type_to_parsers_.find(message_type) == type_to_parsers_.end()) {
       type_to_parsers_.emplace(
-        topic_type,
-        std::make_shared<IntrospectionMessageDeserializer>(topic_type));
+        message_type,
+        std::make_shared<IntrospectionMessageDeserializer>(introspection));
     }
     auto it = topics_to_subscriptions.try_emplace(
       topic,
-      topic, get_node_topics_interface(), type_to_parsers_.at(topic_type));
+      topic, get_node_topics_interface(), type_to_parsers_.at(message_type));
     auto & subscription = it.first->second;
     size_t capacity = 10; // TODO(ZeilingerM) compute capacity from expected frequencies
-    subscription.add_field(member_path, capacity);
+    subscription.add_field(member, capacity);
   }
 };
 
@@ -201,9 +181,12 @@ private:
   std::vector<std::string> history_tick_labels_;
 
   std::unordered_map<std::string, std::string> available_topics_to_types_;
-  std::unordered_map<std::string, std::string> topic_type_to_parser_;
+  std::unordered_map<std::string,
+    std::shared_ptr<MessageIntrospection>> message_type_to_introspection_;
   std::unordered_map<std::string, ImPlotPoint> active_topics_to_data_;
 
+  // queue of requested topic data in plots, for which the topic has not been received on the
+  // graph yet
   std::deque<TopicPlotConfig> untyped_topic_queue_;
 
 public:
@@ -239,8 +222,20 @@ public:
     for (auto it = untyped_topic_queue_.begin(); it != untyped_topic_queue_.end(); ) {
       auto type_it = available_topics_to_types_.find(it->topic_name);
       if (type_it != available_topics_to_types_.end()) {
-        for (const auto & field : it->members) {
-          node_->add_topic_field(it->topic_name, type_it->second, field.path);
+        auto introspection = message_type_to_introspection_.at(type_it->second);
+        for (const auto & plot_member : it->members) {
+          MessageMember member;
+          auto member_info_opt = introspection->get_member_info(plot_member.path);
+          if (member_info_opt.has_value()) {
+            member.path = plot_member.path;
+            member.info = member_info_opt.value();
+            node_->add_topic_field(
+              it->topic_name, introspection, member);
+          } else {
+            // TODO show error and warning
+            std::cerr << "Could not find member " << plot_member.path[0] << " in message type " <<
+                type_it->second << std::endl;
+          }
         }
         it = untyped_topic_queue_.erase(it);
       } else {
@@ -261,7 +256,7 @@ public:
         for (const auto & buffer : subscription.buffers) {
           topic_plot.members.push_back(
             MessageMemberPlotConfig {
-              .path = buffer.member_path
+              .path = buffer.member.path
             });
         }
       }
@@ -298,14 +293,24 @@ public:
     }
 
     if (ImGui::Begin("topic list")) {
-      for (const auto & topic : available_topics_to_types_) {
-        ImGui::Text("%s", topic.first.c_str());
+      for (const auto & [topic, type] : available_topics_to_types_) {
+        ImGui::Text("%s", topic.c_str());
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-          ImGui::SetDragDropPayload("topic_name", topic.first.c_str(), topic.first.size());
+          ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
           ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
           ImGui::SameLine();
-          ImGui::Text("Dragging %s", topic.first.c_str());
+          ImGui::Text("Dragging %s", topic.c_str());
           ImGui::EndDragDropSource();
+        }
+        auto introspection = message_type_to_introspection_.at(type);
+        for (auto it = introspection->begin_member_infos(); it != introspection->end_member_infos(); ++it)
+        {
+          std::stringstream ss;
+          for (const auto & part : it->path) {
+            ss << part << ".";
+          }
+          std::string member_formatted = ss.str();
+          ImGui::Text("m: %s", member_formatted.c_str());
         }
       }
     }
@@ -325,14 +330,15 @@ public:
 
       ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
       // TODO configurable limits per-axis
-      ImPlot::SetNextPlotLimitsY(-2, 2);
+      ImPlot::SetNextPlotLimitsY(-2, 2, ImGuiCond_Once);
 
       size_t n_ticks = static_cast<size_t>(history_length_);
       history_tick_values_.resize(n_ticks);
       if (n_ticks != history_tick_labels_.size()) {
         history_tick_labels_.resize(n_ticks);
         for (size_t i = 0; i < n_ticks; i++) {
-          history_tick_labels_[i] = std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
+          history_tick_labels_[i] =
+            std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
         }
       }
       for (size_t i = 0; i < n_ticks; i++) {
@@ -355,10 +361,16 @@ public:
           std::unique_lock<std::mutex> lock(subscription.buffers_mutex_);
           for (auto & buffer : subscription.buffers) {
             buffer.clear_data_up_to(start);
+
+            std::stringstream ss;
+            for (const auto & part : buffer.member.path) {
+              ss << part << ".";
+            }
+            auto axis_name = ss.str();
             {
               std::unique_lock<std::mutex> lock(buffer.data_mutex);
               ImPlot::PlotLineG(
-                buffer.axis_name.c_str(),
+                axis_name.c_str(),
                 &circular_buffer_access,
                 &buffer.data,
                 buffer.data.size());
@@ -368,12 +380,22 @@ public:
         if (ImPlot::BeginDragDropTarget()) {
           if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
             auto topic_name = std::string(static_cast<char *>(payload->Data));
-            node_->add_topic_field(
-              topic_name, available_topics_to_types_[topic_name], {"data",
-                "speed"});
+            auto message_type = available_topics_to_types_.at(topic_name);
+            auto introspection = message_type_to_introspection_.at(message_type);
+            auto first_member_info = *introspection->begin_member_infos();
+            node_->add_topic_field(topic_name, introspection, first_member_info);
           }
           ImPlot::EndDragDropTarget();
         }
+        // if (ImPlot::BeginDragDropTargetY(ImPlotYAxis_1)) {
+        //   if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+        //     auto topic_name = std::string(static_cast<char *>(payload->Data));
+        //     node_->add_topic_field(
+        //       topic_name, available_topics_to_types_[topic_name], {"data",
+        //         "speed"});
+        //   }
+        //   ImPlot::EndDragDropTarget();
+        // }
         ImPlot::EndPlot();
       }
     }
@@ -415,12 +437,12 @@ public:
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.IniFilename = imgui_ini_path_.c_str();
 
-    ImGui::StyleColorsClassic();
+    ImGui::StyleColorsDark();
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    ImVec4 clear_color = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
 
     while (rclcpp::ok()) {
       if (glfwWindowShouldClose(window)) {
