@@ -4,6 +4,7 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
+#include <boost/algorithm/string/join.hpp>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -168,6 +169,12 @@ static void glfw_error_callback(int error, const char * description)
   fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
 
+struct MemberPayload
+{
+  const char * topic_name;
+  size_t member_index;
+};
+
 class Application
 {
 private:
@@ -234,7 +241,7 @@ public:
           } else {
             // TODO show error and warning
             std::cerr << "Could not find member " << plot_member.path[0] << " in message type " <<
-                type_it->second << std::endl;
+              type_it->second << std::endl;
           }
         }
         it = untyped_topic_queue_.erase(it);
@@ -288,118 +295,132 @@ public:
             std::invalid_argument("Type of topic " + topic + " changed");
           }
         }
+        if (message_type_to_introspection_.find(new_type) == message_type_to_introspection_.end()) {
+          message_type_to_introspection_.emplace(
+            new_type,
+            std::make_shared<MessageIntrospection>(new_type));
+        }
       }
       add_topics_from_queue();
     }
 
     if (ImGui::Begin("topic list")) {
       for (const auto & [topic, type] : available_topics_to_types_) {
-        ImGui::Text("%s", topic.c_str());
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-          ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
-          ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
-          ImGui::SameLine();
-          ImGui::Text("Dragging %s", topic.c_str());
-          ImGui::EndDragDropSource();
-        }
-        auto introspection = message_type_to_introspection_.at(type);
-        for (auto it = introspection->begin_member_infos(); it != introspection->end_member_infos(); ++it)
-        {
-          std::stringstream ss;
-          for (const auto & part : it->path) {
-            ss << part << ".";
+        if (ImGui::TreeNode(topic.c_str())) {
+          if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+            ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
+            ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
+            ImGui::SameLine();
+            ImGui::Text("Dragging %s", topic.c_str());
+            ImGui::EndDragDropSource();
           }
-          std::string member_formatted = ss.str();
-          ImGui::Text("m: %s", member_formatted.c_str());
+          auto introspection = message_type_to_introspection_.at(type);
+          size_t i {0};
+          for (auto it = introspection->begin_member_infos();
+            it != introspection->end_member_infos(); ++it, ++i)
+          {
+            std::string member_formatted = boost::algorithm::join(it->path, ".");
+            ImGui::Text("%s", member_formatted.c_str());
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+              MemberPayload payload {
+                .topic_name = topic.c_str(),
+                .member_index = i,
+              };
+              ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
+              ImGui::EndDragDropSource();
+            }
+          }
+          ImGui::TreePop();
         }
       }
-    }
-    ImGui::End();
-    if (ImGui::Begin("plot view0")) {
-      ImGui::InputDouble(
-        "history", &edited_history_length_, 1, 10, "%.1f s",
-        ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_CharsNoBlank);
-      if (ImGui::IsItemDeactivatedAfterEdit()) {
-        history_length_ = edited_history_length_;
-      }
-      auto history_dur = rclcpp::Duration::from_seconds(history_length_);
-      auto t = node_->now();
-      auto end_sec = t.seconds();
-      auto start = t - history_dur;
-      auto start_sec = start.seconds();
+      ImGui::End();
+      if (ImGui::Begin("plot view0")) {
+        ImGui::InputDouble(
+          "history", &edited_history_length_, 1, 10, "%.1f s",
+          ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_CharsNoBlank);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          history_length_ = edited_history_length_;
+        }
+        auto history_dur = rclcpp::Duration::from_seconds(history_length_);
+        auto t = node_->now();
+        auto end_sec = t.seconds();
+        auto start = t - history_dur;
+        auto start_sec = start.seconds();
 
-      ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-      // TODO configurable limits per-axis
-      ImPlot::SetNextPlotLimitsY(-2, 2, ImGuiCond_Once);
+        ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
+        // TODO configurable limits per-axis
+        ImPlot::SetNextPlotLimitsY(-2, 2, ImGuiCond_Once);
 
-      size_t n_ticks = static_cast<size_t>(history_length_);
-      history_tick_values_.resize(n_ticks);
-      if (n_ticks != history_tick_labels_.size()) {
-        history_tick_labels_.resize(n_ticks);
+        size_t n_ticks = static_cast<size_t>(history_length_);
+        history_tick_values_.resize(n_ticks);
+        if (n_ticks != history_tick_labels_.size()) {
+          history_tick_labels_.resize(n_ticks);
+          for (size_t i = 0; i < n_ticks; i++) {
+            history_tick_labels_[i] =
+              std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
+          }
+        }
         for (size_t i = 0; i < n_ticks; i++) {
-          history_tick_labels_[i] =
-            std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
+          history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
         }
-      }
-      for (size_t i = 0; i < n_ticks; i++) {
-        history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
-      }
 
-      std::vector<char const *> tick_cstrings;
-      tick_cstrings.reserve(history_tick_labels_.size());
-      for (const auto & labels : history_tick_labels_) {
-        tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
-      }
-      ImPlot::SetNextPlotTicksX(
-        history_tick_values_.data(),
-        history_tick_values_.size(), tick_cstrings.data());
+        std::vector<char const *> tick_cstrings;
+        tick_cstrings.reserve(history_tick_labels_.size());
+        for (const auto & labels : history_tick_labels_) {
+          tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
+        }
+        ImPlot::SetNextPlotTicksX(
+          history_tick_values_.data(),
+          history_tick_values_.size(), tick_cstrings.data());
 
-      if (ImPlot::BeginPlot(
-          "plot0", "t (header.stamp sec)", nullptr, ImVec2(-1, -1), ImPlotFlags_None))
-      {
-        for (auto & [_, subscription] : node_->topics_to_subscriptions) {
-          std::unique_lock<std::mutex> lock(subscription.buffers_mutex_);
-          for (auto & buffer : subscription.buffers) {
-            buffer.clear_data_up_to(start);
-
-            std::stringstream ss;
-            for (const auto & part : buffer.member.path) {
-              ss << part << ".";
-            }
-            auto axis_name = ss.str();
-            {
-              std::unique_lock<std::mutex> lock(buffer.data_mutex);
-              ImPlot::PlotLineG(
-                axis_name.c_str(),
-                &circular_buffer_access,
-                &buffer.data,
-                buffer.data.size());
+        if (ImPlot::BeginPlot(
+            "plot0", "t (header.stamp sec)", nullptr, ImVec2(-1, -1), ImPlotFlags_None))
+        {
+          for (auto & [topic_name, subscription] : node_->topics_to_subscriptions) {
+            std::unique_lock<std::mutex> lock(subscription.buffers_mutex_);
+            for (auto & buffer : subscription.buffers) {
+              buffer.clear_data_up_to(start);
+              std::stringstream ss;
+              ss << topic_name << "/" << boost::algorithm::join(
+                buffer.member.path, ".");
+              auto axis_name = ss.str();
+              {
+                std::unique_lock<std::mutex> lock(buffer.data_mutex);
+                ImPlot::PlotLineG(
+                  axis_name.c_str(),
+                  &circular_buffer_access,
+                  &buffer.data,
+                  buffer.data.size());
+              }
             }
           }
-        }
-        if (ImPlot::BeginDragDropTarget()) {
-          if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-            auto topic_name = std::string(static_cast<char *>(payload->Data));
-            auto message_type = available_topics_to_types_.at(topic_name);
-            auto introspection = message_type_to_introspection_.at(message_type);
-            auto first_member_info = *introspection->begin_member_infos();
-            node_->add_topic_field(topic_name, introspection, first_member_info);
+          if (ImPlot::BeginDragDropTarget()) {
+            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+              auto topic_name = std::string(static_cast<char *>(payload->Data));
+              auto message_type = available_topics_to_types_.at(topic_name);
+              auto introspection = message_type_to_introspection_.at(message_type);
+              // TODO don't take first, but recommended default member
+              auto first_member_info = *introspection->begin_member_infos();
+              node_->add_topic_field(topic_name, introspection, first_member_info);
+            }
+            ImPlot::EndDragDropTarget();
           }
-          ImPlot::EndDragDropTarget();
+          if (ImPlot::BeginDragDropTargetY(ImPlotYAxis_1)) {
+            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+              auto member_payload = static_cast<MemberPayload *>(payload->Data);
+              auto message_type = available_topics_to_types_.at(member_payload->topic_name);
+              auto introspection = message_type_to_introspection_.at(message_type);
+              auto member_infos = introspection->begin_member_infos();
+              std::advance(member_infos, member_payload->member_index);
+              node_->add_topic_field(member_payload->topic_name, introspection, *member_infos);
+            }
+            ImPlot::EndDragDropTarget();
+          }
+          ImPlot::EndPlot();
         }
-        // if (ImPlot::BeginDragDropTargetY(ImPlotYAxis_1)) {
-        //   if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-        //     auto topic_name = std::string(static_cast<char *>(payload->Data));
-        //     node_->add_topic_field(
-        //       topic_name, available_topics_to_types_[topic_name], {"data",
-        //         "speed"});
-        //   }
-        //   ImPlot::EndDragDropTarget();
-        // }
-        ImPlot::EndPlot();
       }
+      ImGui::End();
     }
-    ImGui::End();
   }
 
   int run()
@@ -421,7 +442,7 @@ public:
       return EXIT_FAILURE;
     }
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // enable vsync
+    glfwSwapInterval(1);   // enable vsync
 
     bool err = glewInit() != GLEW_OK;
     if (err) {

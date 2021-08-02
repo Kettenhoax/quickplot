@@ -28,7 +28,9 @@ struct MessageMember
   MessageMemberInfo info;
 };
 
-class MemberIterator : public std::iterator<std::input_iterator_tag, MessageMember>
+bool is_numeric(uint8_t type_id);
+
+class MemberIterator : public std::iterator<std::forward_iterator_tag, MessageMember>
 {
 private:
   struct MemberIteration
@@ -46,6 +48,32 @@ private:
     return &members->members_[it.current_index];
   }
 
+  bool is_listable(const rosidl_typesupport_introspection_cpp::MessageMember * member) const
+  {
+    if (is_message_type(member, "Time", "builtin_interfaces::msg")) {
+      return true;
+    }
+    if (is_message_type(member, "Duration", "builtin_interfaces::msg")) {
+      return true;
+    }
+    return is_numeric(member->type_id_);
+  }
+
+  static bool is_message_type(
+    const rosidl_typesupport_introspection_cpp::MessageMember * member,
+    std::string_view message_name, std::string_view message_namespace)
+  {
+    if (member->type_id_ != rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+      return false;
+    }
+    auto members =
+      static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(member->members_
+      ->
+      data);
+    return message_name.compare(members->message_name_) == 0 && message_namespace.compare(
+      members->message_namespace_) == 0;
+  }
+
   void _advance_to_leaf()
   {
     while (true) {
@@ -53,6 +81,12 @@ private:
       const auto it = deque_.back();
       auto member = get_member(it);
       if (member->type_id_ == rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
+        if (is_message_type(member, "Time", "builtin_interfaces::msg")) {
+          break;
+        }
+        if (is_message_type(member, "Duration", "builtin_interfaces::msg")) {
+          break;
+        }
         deque_.push_back(
           MemberIteration {
             .message = member->members_,
@@ -63,12 +97,32 @@ private:
         break;
       }
     }
+    // ensure only numeric fields are listed
+    while (!deque_.empty() && !is_listable(get_member(deque_.back()))) {
+      _increment_member();
+    }
+  }
+
+  void _increment_member()
+  {
+    while (!deque_.empty()) {
+      auto & it = deque_.back();
+      it.current_index += 1;
+      auto members =
+        static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(it.message->data);
+      if (it.current_index >= members->member_count_) {
+        deque_.pop_back();
+      } else {
+        _advance_to_leaf();
+        break;
+      }
+    }
   }
 
   void _set_current_member()
   {
     current_member_.path.clear();
-    for (const auto& it : deque_) {
+    for (const auto & it : deque_) {
       auto super_member = get_member(it);
       current_member_.path.push_back(super_member->name_);
     }
@@ -114,18 +168,7 @@ public:
   MessageMember & operator++()
   {
     assert(!deque_.empty());
-    while (!deque_.empty()) {
-      auto & it = deque_.back();
-      it.current_index += 1;
-      auto members =
-        static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(it.message->data);
-      if (it.current_index >= members->member_count_) {
-        deque_.pop_back();
-      } else {
-        _advance_to_leaf();
-        break;
-      }
-    }
+    _increment_member();
     if (!deque_.empty()) {
       _set_current_member();
     }

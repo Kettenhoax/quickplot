@@ -11,9 +11,8 @@
 using geometry_msgs::msg::TwistStamped;
 using nav_msgs::msg::Odometry;
 
-TEST(test_parser, get_member_infos)
+TEST(test_parser, twist_get_member_infos_lists_numeric_members)
 {
-  // test is different from Twist, since Odometry contains an array
   auto topic_type = "geometry_msgs/Twist";
   auto introspection = std::make_shared<quickplot::MessageIntrospection>(topic_type);
 
@@ -48,6 +47,22 @@ TEST(test_parser, get_member_infos)
   EXPECT_EQ(members[5].path.size(), 2lu);
   EXPECT_EQ(members[5].path[0], "angular");
   EXPECT_EQ(members[5].path[1], "z");
+}
+
+TEST(test_parser, twist_stamped_get_member_infos_lists_single_stamp)
+{
+  auto topic_type = "geometry_msgs/TwistStamped";
+  auto introspection = std::make_shared<quickplot::MessageIntrospection>(topic_type);
+
+  std::vector<quickplot::MessageMember> members;
+  std::move(
+    introspection->begin_member_infos(),
+    introspection->end_member_infos(), std::back_inserter(members));
+  EXPECT_EQ(members.size(), 7lu);
+  EXPECT_EQ(members[0].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE);
+  EXPECT_EQ(members[0].path.size(), 2lu);
+  EXPECT_EQ(members[0].path[0], "header");
+  EXPECT_EQ(members[0].path[1], "stamp");
 }
 
 TEST(test_parser, parse_twist_stamped_header_and_field)

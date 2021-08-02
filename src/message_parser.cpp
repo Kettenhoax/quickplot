@@ -35,7 +35,7 @@ double cast_numeric(void * n, uint8_t type_id)
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
       return *static_cast<uint8_t *>(n);
     default:
-      throw std::invalid_argument("Unknown member type_id");
+      throw std::invalid_argument("unknown member type_id");
   }
 }
 
@@ -103,7 +103,7 @@ std::optional<MessageMemberInfo> _find_member(
         continue;
       }
       if (!is_numeric(member.type_id_)) {
-        throw std::invalid_argument("Requested message member is not numeric");
+        throw std::invalid_argument("requested message member is not numeric");
       }
       return MessageMemberInfo {
         .offset = (parent_offset + member.offset_),
