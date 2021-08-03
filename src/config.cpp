@@ -3,6 +3,7 @@
 #include <pwd.h>
 #include <string>
 #include <iostream>
+#include <vector>
 #include <fstream>
 #include <yaml-cpp/yaml.h>
 #include "quickplot/config.hpp"
@@ -11,54 +12,69 @@ namespace YAML
 {
 
 template<>
-struct convert<quickplot::MessageMemberPlotConfig>
+struct convert<quickplot::DataSourceConfig>
 {
-  static Node encode(const quickplot::MessageMemberPlotConfig & mmpc)
+  static Node encode(const quickplot::DataSourceConfig & s)
   {
     Node node;
-    node["path"] = mmpc.path;
+    node["topic_name"] = s.topic_name;
+    node["member_path"] = s.member_path;
+    if (s.axis != 0) {
+      node["axis"] = s.axis;
+    }
     return node;
   }
 
-  static bool decode(const Node & node, quickplot::MessageMemberPlotConfig & mmpc)
+  static bool decode(const Node & node, quickplot::DataSourceConfig & s)
   {
-    auto path_node = node["path"];
-    if (!path_node.IsSequence()) {
-      return false;
-    }
-    for (const auto & item : path_node) {
-      mmpc.path.push_back(item.as<std::string>());
+    s.topic_name = node["topic_name"].as<std::string>();
+    s.member_path = node["member_path"].as<std::vector<std::string>>();
+    if (node["axis"].IsDefined()) {
+      s.axis = node["axis"].as<int>();
+      if (s.axis < 0 || s.axis > 2) {
+        return false;
+      }
+    } else {
+      s.axis = 0;
     }
     return true;
   }
 };
 
 template<>
-struct convert<quickplot::TopicPlotConfig>
+struct convert<quickplot::AxisConfig>
 {
-  static Node encode(const quickplot::TopicPlotConfig & topic_plot)
+  static Node encode(const quickplot::AxisConfig & s)
   {
     Node node;
-    node["topic_name"] = topic_plot.topic_name;
-    if (!topic_plot.members.empty()) {
-      auto members = node["members"];
-      for (const auto & member : topic_plot.members) {
-        members.push_back(member);
-      }
-    }
+    node["y_min"] = s.y_min;
+    node["y_max"] = s.y_max;
     return node;
   }
 
-  static bool decode(const Node & node, quickplot::TopicPlotConfig & tpc)
+  static bool decode(const Node & node, quickplot::AxisConfig & s)
   {
-    auto members_node = node["members"];
-    if (!members_node.IsSequence()) {
-      return false;
-    }
-    for (const auto & item : members_node) {
-      tpc.members.push_back(item.as<quickplot::MessageMemberPlotConfig>());
-    }
-    tpc.topic_name = node["topic_name"].as<std::string>();
+    s.y_min = node["y_min"].as<double>();
+    s.y_max = node["y_max"].as<double>();
+    return true;
+  }
+};
+
+template<>
+struct convert<quickplot::PlotConfig>
+{
+  static Node encode(const quickplot::PlotConfig & s)
+  {
+    Node node;
+    node["axes"] = s.axes;
+    node["sources"] = s.sources;
+    return node;
+  }
+
+  static bool decode(const Node & node, quickplot::PlotConfig & s)
+  {
+    s.axes = node["axes"].as<std::vector<quickplot::AxisConfig>>();
+    s.sources = node["sources"].as<std::vector<quickplot::DataSourceConfig>>();
     return true;
   }
 };
@@ -70,27 +86,14 @@ struct convert<quickplot::ApplicationConfig>
   {
     Node node;
     node["history_length"] = config.history_length;
-    if (!config.topic_plots.empty()) {
-      auto plots = node["topic_plots"];
-      for (const auto & topic_plot : config.topic_plots) {
-        plots.push_back(topic_plot);
-      }
-    }
+    node["plots"] = config.plots;
     return node;
   }
 
   static bool decode(const Node & node, quickplot::ApplicationConfig & config)
   {
-    auto topics_node = node["topic_plots"];
-    if (topics_node.IsDefined()) {
-      if (!topics_node.IsSequence()) {
-        return false;
-      }
-      for (const auto & item : topics_node) {
-        config.topic_plots.push_back(item.as<quickplot::TopicPlotConfig>());
-      }
-    }
     config.history_length = node["history_length"].as<double>();
+    config.plots = node["plots"].as<std::vector<quickplot::PlotConfig>>();
     return true;
   }
 };
@@ -136,15 +139,19 @@ ApplicationConfig default_config()
 {
   return ApplicationConfig {
     .history_length = 10.0,
-    .topic_plots = {}
+    .plots = {}
   };
 }
 
 ApplicationConfig load_config(std::string path)
 {
-  // TODO validate topic and member names
-  YAML::Node config = YAML::LoadFile(path);
-  return config.as<ApplicationConfig>();
+  // TODO(ZeilingerM) validate topic and member names
+  try {
+    YAML::Node config = YAML::LoadFile(path);
+    return config.as<ApplicationConfig>();
+  } catch (const YAML::Exception &) {
+    std::throw_with_nested(config_error());
+  }
 }
 
 } // namespace quickplot

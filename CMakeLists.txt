@@ -49,11 +49,11 @@ ament_target_dependencies(quickplot_bin
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
-  find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_gmock REQUIRED)
   find_package(geometry_msgs REQUIRED)
   find_package(nav_msgs REQUIRED)
 
-  ament_add_gtest(test_parser test/test_parser.cpp)
+  ament_add_gmock(test_parser test/test_parser.cpp)
   target_link_libraries(test_parser quickplot)
   ament_target_dependencies(test_parser
     rclcpp
@@ -62,7 +62,7 @@ if(BUILD_TESTING)
     geometry_msgs
     nav_msgs)
 
-  ament_add_gtest(test_config test/test_config.cpp WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  ament_add_gmock(test_config test/test_config.cpp WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   target_link_libraries(test_config quickplot)
 endif()
 

@@ -1,5 +1,8 @@
 history_length: 5
-topic_plots:
-  - topic_name: test
-    members:
-      - path: [inner, value]
+plots:
+  - axes:
+      - y_min: -2
+        y_max: 2
+    sources:
+      - topic_name: test
+        member_path: [inner, value]

@@ -62,8 +62,6 @@ private:
   std::vector<uint8_t> message_buffer_;
   std::shared_ptr<IntrospectionMessageDeserializer> deserializer_;
   rclcpp::GenericSubscription::SharedPtr subscription_;
-
-public:
   std::mutex buffers_mutex_;
 
   // one data buffer per plotted member of a message
@@ -71,6 +69,7 @@ public:
   // the element to be MoveConstructible for resizing the array
   std::list<PlotDataBuffer> buffers;
 
+public:
   explicit PlotSubscription(
     std::string topic_name,
     rclcpp::node_interfaces::NodeTopicsInterface::SharedPtr topics_interface,
@@ -99,10 +98,26 @@ public:
   void add_field(MessageMember member, size_t capacity)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
+    for (auto & buffer : buffers) {
+      if (buffer.member.path == member.path) {
+        std::invalid_argument("member already in subscription");
+      }
+    }
     buffers.emplace_back(
       member,
       capacity
     );
+  }
+
+  PlotDataBuffer & get_buffer(std::vector<std::string> member_path)
+  {
+    std::unique_lock<std::mutex> lock(buffers_mutex_);
+    for (auto & buffer : buffers) {
+      if (buffer.member.path == member_path) {
+        return buffer;
+      }
+    }
+    throw std::invalid_argument("member not found by path");
   }
 
   void receive_callback(std::shared_ptr<rclcpp::SerializedMessage> message)
@@ -175,14 +190,26 @@ struct MemberPayload
   size_t member_index;
 };
 
+void print_exception_recursive(const std::exception & e, int level = 0)
+{
+  std::cerr << std::string(level, ' ') << e.what() << '\n';
+  try {
+    std::rethrow_if_nested(e);
+  } catch (const std::exception & e) {
+    print_exception_recursive(e, level + 1);
+  } catch (...) {
+  }
+}
+
 class Application
 {
 private:
   std::shared_ptr<QuickPlotNode> node_;
   rclcpp::Event::SharedPtr graph_event_;
 
+  ApplicationConfig config_;
+
   std::string imgui_ini_path_;
-  double history_length_;
   double edited_history_length_;
   std::vector<double> history_tick_values_;
   std::vector<std::string> history_tick_labels_;
@@ -192,9 +219,9 @@ private:
     std::shared_ptr<MessageIntrospection>> message_type_to_introspection_;
   std::unordered_map<std::string, ImPlotPoint> active_topics_to_data_;
 
-  // queue of requested topic data in plots, for which the topic has not been received on the
-  // graph yet
-  std::deque<TopicPlotConfig> untyped_topic_queue_;
+  // queue of requested topic data, for which the topic metadata has not been received yet
+  std::mutex data_source_queue_mutex_;
+  std::deque<DataSourceConfig> uninitialized_data_source_queue_;
 
 public:
   explicit Application(std::shared_ptr<QuickPlotNode> _node)
@@ -204,76 +231,69 @@ public:
     graph_event_->set(); // set manually to trigger initial topics query
 
     auto config_path = get_default_config_path();
-    ApplicationConfig config;
-    if (std::filesystem::exists(config_path)) {
-      config = load_config(config_path);
-    } else {
-      config = default_config();
+    try {
+      config_ = load_config(config_path);
+
+      // TODO(ZeilingerM) resolve on-demand and don't overwrite config
+      for (auto & plot : config_.plots) {
+        for (auto & source: plot.sources) {
+          source.topic_name = node_->get_node_topics_interface()->resolve_topic_name(
+            source.topic_name);
+        }
+      }
+    } catch (const config_error & e) {
+      print_exception_recursive(e);
+      std::cout << "Loading default configuration" << std::endl;
+      config_ = default_config();
     }
-    apply_config(config);
+    apply_config(config_);
     imgui_ini_path_ = get_default_config_directory() + "/imgui.ini";
   }
 
   void apply_config(ApplicationConfig config)
   {
-    history_length_ = config.history_length;
-    edited_history_length_ = history_length_;
-    std::copy(
-      config.topic_plots.begin(), config.topic_plots.end(),
-      std::back_inserter(untyped_topic_queue_));
+    edited_history_length_ = config.history_length;
+    {
+      std::unique_lock<std::mutex> lock(data_source_queue_mutex_);
+      for (auto plot : config.plots) {
+        for (auto source: plot.sources) {
+          uninitialized_data_source_queue_.push_back(source);
+        }
+      }
+    }
     add_topics_from_queue();
   }
 
   void add_topics_from_queue()
   {
-    for (auto it = untyped_topic_queue_.begin(); it != untyped_topic_queue_.end(); ) {
+    std::unique_lock<std::mutex> lock(data_source_queue_mutex_);
+    for (auto it = uninitialized_data_source_queue_.begin();
+      it != uninitialized_data_source_queue_.end(); )
+    {
       auto type_it = available_topics_to_types_.find(it->topic_name);
       if (type_it != available_topics_to_types_.end()) {
         auto introspection = message_type_to_introspection_.at(type_it->second);
-        for (const auto & plot_member : it->members) {
-          MessageMember member;
-          auto member_info_opt = introspection->get_member_info(plot_member.path);
-          if (member_info_opt.has_value()) {
-            member.path = plot_member.path;
-            member.info = member_info_opt.value();
-            node_->add_topic_field(
-              it->topic_name, introspection, member);
-          } else {
-            // TODO show error and warning
-            std::cerr << "Could not find member " << plot_member.path[0] << " in message type " <<
-              type_it->second << std::endl;
-          }
+        MessageMember member;
+        auto member_info_opt = introspection->get_member_info(it->member_path);
+        if (member_info_opt.has_value()) {
+          member.path = it->member_path;
+          member.info = member_info_opt.value();
+          node_->add_topic_field(
+            it->topic_name, introspection, member);
+        } else {
+          // TODO(ZeilingerM) show error and warning on GUI
+          throw std::invalid_argument("Could not find member in message type");
         }
-        it = untyped_topic_queue_.erase(it);
+        it = uninitialized_data_source_queue_.erase(it);
       } else {
         ++it;
       }
     }
   }
 
-  ApplicationConfig collect_config()
-  {
-    ApplicationConfig config;
-    config.history_length = history_length_;
-    {
-      std::lock_guard<std::mutex> lock(node_->topic_mutex);
-      for (const auto &[topic_name, subscription] : node_->topics_to_subscriptions) {
-        auto & topic_plot = config.topic_plots.emplace_back();
-        topic_plot.topic_name = topic_name;
-        for (const auto & buffer : subscription.buffers) {
-          topic_plot.members.push_back(
-            MessageMemberPlotConfig {
-              .path = buffer.member.path
-            });
-        }
-      }
-    }
-    return config;
-  }
-
   void save_application_config()
   {
-    save_config(collect_config(), get_default_config_path());
+    save_config(config_, get_default_config_path());
   }
 
   void update()
@@ -339,19 +359,15 @@ public:
           "history", &edited_history_length_, 1, 10, "%.1f s",
           ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_CharsNoBlank);
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-          history_length_ = edited_history_length_;
+          config_.history_length = edited_history_length_;
         }
-        auto history_dur = rclcpp::Duration::from_seconds(history_length_);
+        auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
         auto t = node_->now();
         auto end_sec = t.seconds();
         auto start = t - history_dur;
         auto start_sec = start.seconds();
 
-        ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-        // TODO configurable limits per-axis
-        ImPlot::SetNextPlotLimitsY(-2, 2, ImGuiCond_Once);
-
-        size_t n_ticks = static_cast<size_t>(history_length_);
+        size_t n_ticks = static_cast<size_t>(config_.history_length);
         history_tick_values_.resize(n_ticks);
         if (n_ticks != history_tick_labels_.size()) {
           history_tick_labels_.resize(n_ticks);
@@ -369,58 +385,117 @@ public:
         for (const auto & labels : history_tick_labels_) {
           tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
         }
-        ImPlot::SetNextPlotTicksX(
-          history_tick_values_.data(),
-          history_tick_values_.size(), tick_cstrings.data());
 
-        if (ImPlot::BeginPlot(
-            "plot0", "t (header.stamp sec)", nullptr, ImVec2(-1, -1), ImPlotFlags_None))
-        {
-          for (auto & [topic_name, subscription] : node_->topics_to_subscriptions) {
-            std::unique_lock<std::mutex> lock(subscription.buffers_mutex_);
-            for (auto & buffer : subscription.buffers) {
-              buffer.clear_data_up_to(start);
-              std::stringstream ss;
-              ss << topic_name << "/" << boost::algorithm::join(
-                buffer.member.path, ".");
-              auto axis_name = ss.str();
-              {
-                std::unique_lock<std::mutex> lock(buffer.data_mutex);
-                ImPlot::PlotLineG(
-                  axis_name.c_str(),
-                  &circular_buffer_access,
-                  &buffer.data,
-                  buffer.data.size());
+        for (size_t p = 0; p < config_.plots.size(); p++) {
+          auto & plot = config_.plots[p];
+          ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
+          ImPlot::SetNextPlotTicksX(
+            history_tick_values_.data(),
+            history_tick_values_.size(), tick_cstrings.data());
+
+          for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
+            const auto & axis_config = plot.axes[a];
+            ImPlot::SetNextPlotLimitsY(
+              axis_config.y_min, axis_config.y_max,
+              ImGuiCond_Once, a);
+          }
+
+          if (ImPlot::BeginPlot(
+              "plot0", "t (header.stamp sec)", nullptr, ImVec2(-1, -1),
+              (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
+              (plot.axes.size() >= 3 ? ImPlotFlags_YAxis3 : 0)))
+          {
+            for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
+              for (const auto & source_config : plot.sources) {
+                if (source_config.axis == a) {
+                  std::stringstream ss;
+                  ss << source_config.topic_name << " " << boost::algorithm::join(
+                    source_config.member_path, ".");
+
+                  ImPlot::SetPlotYAxis(a);
+
+                  std::unique_lock<std::mutex> lock(node_->topic_mutex);
+                  auto it = node_->topics_to_subscriptions.find(source_config.topic_name);
+                  if (it == node_->topics_to_subscriptions.end()) {
+                    // plot empty line to show warning in legend
+                    ss << " (not received)";
+                    auto series_label = ss.str();
+                    ImPlot::PlotLine(series_label.c_str(), static_cast<float *>(nullptr), 0);
+                  } else {
+                    auto & buffer = it->second.get_buffer(source_config.member_path);
+                    buffer.clear_data_up_to(start);
+                    auto series_label = ss.str();
+                    {
+                      std::unique_lock<std::mutex> lock(buffer.data_mutex);
+                      ImPlot::PlotLineG(
+                        series_label.c_str(),
+                        &circular_buffer_access,
+                        &buffer.data,
+                        buffer.data.size());
+                    }
+                  }
+                }
               }
             }
-          }
-          if (ImPlot::BeginDragDropTarget()) {
-            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-              auto topic_name = std::string(static_cast<char *>(payload->Data));
-              auto message_type = available_topics_to_types_.at(topic_name);
-              auto introspection = message_type_to_introspection_.at(message_type);
-              // TODO don't take first, but recommended default member
-              auto first_member_info = *introspection->begin_member_infos();
-              node_->add_topic_field(topic_name, introspection, first_member_info);
+            if (ImPlot::BeginDragDropTarget()) {
+              if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+                auto topic_name = std::string(static_cast<char *>(payload->Data));
+                MemberPayload member_payload {
+                  .topic_name = topic_name.c_str(),
+                  .member_index = 1,
+                };
+                accept_member_payload(p, ImPlotYAxis_1, &member_payload);
+              }
+              if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+                accept_member_payload(p, ImPlotYAxis_1, static_cast<MemberPayload *>(payload->Data));
+              }
+              ImPlot::EndDragDropTarget();
             }
-            ImPlot::EndDragDropTarget();
-          }
-          if (ImPlot::BeginDragDropTargetY(ImPlotYAxis_1)) {
-            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
-              auto member_payload = static_cast<MemberPayload *>(payload->Data);
-              auto message_type = available_topics_to_types_.at(member_payload->topic_name);
-              auto introspection = message_type_to_introspection_.at(message_type);
-              auto member_infos = introspection->begin_member_infos();
-              std::advance(member_infos, member_payload->member_index);
-              node_->add_topic_field(member_payload->topic_name, introspection, *member_infos);
+            for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2, ImPlotYAxis_3}) {
+              if (ImPlot::BeginDragDropTargetY(axis)) {
+                if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+                  auto topic_name = std::string(static_cast<char *>(payload->Data));
+                  MemberPayload member_payload {
+                    .topic_name = topic_name.c_str(),
+                    .member_index = 1,
+                  };
+                  accept_member_payload(p, axis, &member_payload);
+                }
+                if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+                  accept_member_payload(p, axis, static_cast<MemberPayload *>(payload->Data));
+                }
+                ImPlot::EndDragDropTarget();
+              }
             }
-            ImPlot::EndDragDropTarget();
+            for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
+              auto & axis_config = plot.axes[a];
+              // store the potentially user-defined limit
+              {
+                auto limits = ImPlot::GetPlotLimits(a);
+                axis_config.y_min = limits.Y.Min;
+                axis_config.y_max = limits.Y.Max;
+              }
+            }
+            ImPlot::EndPlot();
           }
-          ImPlot::EndPlot();
         }
       }
       ImGui::End();
     }
+  }
+
+  void accept_member_payload(size_t plot_index, ImPlotYAxis axis, MemberPayload * payload)
+  {
+    auto message_type = available_topics_to_types_.at(payload->topic_name);
+    auto introspection = message_type_to_introspection_.at(message_type);
+    auto member_infos = introspection->begin_member_infos();
+    std::advance(member_infos, payload->member_index);
+    node_->add_topic_field(payload->topic_name, introspection, *member_infos);
+    config_.plots[plot_index].sources.push_back(DataSourceConfig {
+      .topic_name = payload->topic_name,
+      .member_path = member_infos->path,
+      .axis = axis,
+    });
   }
 
   int run()

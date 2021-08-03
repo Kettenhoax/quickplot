@@ -1,5 +1,5 @@
 #include "quickplot/message_parser.hpp"
-#include <gtest/gtest.h>
+#include <gmock/gmock.h>
 #include <memory>
 #include <vector>
 #include <algorithm>
@@ -23,30 +23,18 @@ TEST(test_parser, twist_get_member_infos_lists_numeric_members)
 
   EXPECT_EQ(members.size(), 6lu);
   EXPECT_EQ(members[0].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64);
-  EXPECT_EQ(members[0].path.size(), 2lu);
-  EXPECT_EQ(members[0].path[0], "linear");
-  EXPECT_EQ(members[0].path[1], "x");
+  ASSERT_THAT(members[0].path, ::testing::ElementsAre("linear", "x"));
   EXPECT_EQ(members[1].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64);
-  EXPECT_EQ(members[1].path.size(), 2lu);
-  EXPECT_EQ(members[1].path[0], "linear");
-  EXPECT_EQ(members[1].path[1], "y");
+  ASSERT_THAT(members[1].path, ::testing::ElementsAre("linear", "y"));
   EXPECT_EQ(members[2].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64);
-  EXPECT_EQ(members[2].path.size(), 2lu);
-  EXPECT_EQ(members[2].path[0], "linear");
-  EXPECT_EQ(members[2].path[1], "z");
+  ASSERT_THAT(members[2].path, ::testing::ElementsAre("linear", "z"));
 
   EXPECT_EQ(members[3].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64);
-  EXPECT_EQ(members[3].path.size(), 2lu);
-  EXPECT_EQ(members[3].path[0], "angular");
-  EXPECT_EQ(members[3].path[1], "x");
+  ASSERT_THAT(members[3].path, ::testing::ElementsAre("angular", "x"));
   EXPECT_EQ(members[4].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64);
-  EXPECT_EQ(members[4].path.size(), 2lu);
-  EXPECT_EQ(members[4].path[0], "angular");
-  EXPECT_EQ(members[4].path[1], "y");
+  ASSERT_THAT(members[4].path, ::testing::ElementsAre("angular", "y"));
   EXPECT_EQ(members[5].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64);
-  EXPECT_EQ(members[5].path.size(), 2lu);
-  EXPECT_EQ(members[5].path[0], "angular");
-  EXPECT_EQ(members[5].path[1], "z");
+  ASSERT_THAT(members[5].path, ::testing::ElementsAre("angular", "z"));
 }
 
 TEST(test_parser, twist_stamped_get_member_infos_lists_single_stamp)
@@ -60,9 +48,7 @@ TEST(test_parser, twist_stamped_get_member_infos_lists_single_stamp)
     introspection->end_member_infos(), std::back_inserter(members));
   EXPECT_EQ(members.size(), 7lu);
   EXPECT_EQ(members[0].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE);
-  EXPECT_EQ(members[0].path.size(), 2lu);
-  EXPECT_EQ(members[0].path[0], "header");
-  EXPECT_EQ(members[0].path[1], "stamp");
+  ASSERT_THAT(members[0].path, ::testing::ElementsAre("header", "stamp"));
 }
 
 TEST(test_parser, parse_twist_stamped_header_and_field)
