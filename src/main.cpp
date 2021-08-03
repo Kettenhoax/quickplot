@@ -296,6 +296,100 @@ public:
     save_config(config_, get_default_config_path());
   }
 
+  void plot_view(size_t i, PlotConfig & plot, rclcpp::Time t)
+  {
+    auto id = "plot" + std::to_string(i);
+    if (ImGui::Begin(id.c_str())) {
+      for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
+        const auto & axis_config = plot.axes[a];
+        ImPlot::SetNextPlotLimitsY(
+          axis_config.y_min, axis_config.y_max,
+          ImGuiCond_Once, a);
+      }
+
+      if (ImPlot::BeginPlot(
+          id.c_str(), "t (header.stamp sec)", nullptr, ImVec2(-1, -1),
+          (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
+          (plot.axes.size() >= 3 ? ImPlotFlags_YAxis3 : 0)))
+      {
+        for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
+          for (const auto & source_config : plot.sources) {
+            if (source_config.axis == a) {
+              std::stringstream ss;
+              ss << source_config.topic_name << " " << boost::algorithm::join(
+                source_config.member_path, ".");
+
+              ImPlot::SetPlotYAxis(a);
+
+              std::unique_lock<std::mutex> lock(node_->topic_mutex);
+              auto it = node_->topics_to_subscriptions.find(source_config.topic_name);
+              if (it == node_->topics_to_subscriptions.end()) {
+                // plot empty line to show warning in legend
+                ss << " (not received)";
+                auto series_label = ss.str();
+                ImPlot::HideNextItem(true, ImGuiCond_Always);
+                ImPlot::PlotLine(series_label.c_str(), static_cast<float *>(nullptr), 0);
+              } else {
+                auto & buffer = it->second.get_buffer(source_config.member_path);
+                buffer.clear_data_up_to(t);
+                auto series_label = ss.str();
+                {
+                  std::unique_lock<std::mutex> lock(buffer.data_mutex);
+                  ImPlot::PlotLineG(
+                    series_label.c_str(),
+                    &circular_buffer_access,
+                    &buffer.data,
+                    buffer.data.size());
+                }
+              }
+            }
+          }
+        }
+        if (ImPlot::BeginDragDropTarget()) {
+          if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+            auto topic_name = std::string(static_cast<char *>(payload->Data));
+            MemberPayload member_payload {
+              .topic_name = topic_name.c_str(),
+              .member_index = 1,
+            };
+            accept_member_payload(plot, ImPlotYAxis_1, &member_payload);
+          }
+          if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+            accept_member_payload(plot, ImPlotYAxis_1, static_cast<MemberPayload *>(payload->Data));
+          }
+          ImPlot::EndDragDropTarget();
+        }
+        for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2, ImPlotYAxis_3}) {
+          if (ImPlot::BeginDragDropTargetY(axis)) {
+            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+              auto topic_name = std::string(static_cast<char *>(payload->Data));
+              MemberPayload member_payload {
+                .topic_name = topic_name.c_str(),
+                .member_index = 1,
+              };
+              accept_member_payload(plot, axis, &member_payload);
+            }
+            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+              accept_member_payload(plot, axis, static_cast<MemberPayload *>(payload->Data));
+            }
+            ImPlot::EndDragDropTarget();
+          }
+        }
+        for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
+          auto & axis_config = plot.axes[a];
+          // store the potentially user-defined limit
+          {
+            auto limits = ImPlot::GetPlotLimits(a);
+            axis_config.y_min = limits.Y.Min;
+            axis_config.y_max = limits.Y.Max;
+          }
+        }
+        ImPlot::EndPlot();
+      }
+    }
+    ImGui::End();
+  }
+
   void update()
   {
     if (graph_event_->check_and_clear()) {
@@ -361,141 +455,59 @@ public:
         if (ImGui::IsItemDeactivatedAfterEdit()) {
           config_.history_length = edited_history_length_;
         }
-        auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
-        auto t = node_->now();
-        auto end_sec = t.seconds();
-        auto start = t - history_dur;
-        auto start_sec = start.seconds();
-
-        size_t n_ticks = static_cast<size_t>(config_.history_length);
-        history_tick_values_.resize(n_ticks);
-        if (n_ticks != history_tick_labels_.size()) {
-          history_tick_labels_.resize(n_ticks);
-          for (size_t i = 0; i < n_ticks; i++) {
-            history_tick_labels_[i] =
-              std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
-          }
-        }
-        for (size_t i = 0; i < n_ticks; i++) {
-          history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
-        }
-
-        std::vector<char const *> tick_cstrings;
-        tick_cstrings.reserve(history_tick_labels_.size());
-        for (const auto & labels : history_tick_labels_) {
-          tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
-        }
-
-        for (size_t p = 0; p < config_.plots.size(); p++) {
-          auto & plot = config_.plots[p];
-          ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-          ImPlot::SetNextPlotTicksX(
-            history_tick_values_.data(),
-            history_tick_values_.size(), tick_cstrings.data());
-
-          for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-            const auto & axis_config = plot.axes[a];
-            ImPlot::SetNextPlotLimitsY(
-              axis_config.y_min, axis_config.y_max,
-              ImGuiCond_Once, a);
-          }
-
-          if (ImPlot::BeginPlot(
-              "plot0", "t (header.stamp sec)", nullptr, ImVec2(-1, -1),
-              (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
-              (plot.axes.size() >= 3 ? ImPlotFlags_YAxis3 : 0)))
-          {
-            for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-              for (const auto & source_config : plot.sources) {
-                if (source_config.axis == a) {
-                  std::stringstream ss;
-                  ss << source_config.topic_name << " " << boost::algorithm::join(
-                    source_config.member_path, ".");
-
-                  ImPlot::SetPlotYAxis(a);
-
-                  std::unique_lock<std::mutex> lock(node_->topic_mutex);
-                  auto it = node_->topics_to_subscriptions.find(source_config.topic_name);
-                  if (it == node_->topics_to_subscriptions.end()) {
-                    // plot empty line to show warning in legend
-                    ss << " (not received)";
-                    auto series_label = ss.str();
-                    ImPlot::PlotLine(series_label.c_str(), static_cast<float *>(nullptr), 0);
-                  } else {
-                    auto & buffer = it->second.get_buffer(source_config.member_path);
-                    buffer.clear_data_up_to(start);
-                    auto series_label = ss.str();
-                    {
-                      std::unique_lock<std::mutex> lock(buffer.data_mutex);
-                      ImPlot::PlotLineG(
-                        series_label.c_str(),
-                        &circular_buffer_access,
-                        &buffer.data,
-                        buffer.data.size());
-                    }
-                  }
-                }
-              }
-            }
-            if (ImPlot::BeginDragDropTarget()) {
-              if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-                auto topic_name = std::string(static_cast<char *>(payload->Data));
-                MemberPayload member_payload {
-                  .topic_name = topic_name.c_str(),
-                  .member_index = 1,
-                };
-                accept_member_payload(p, ImPlotYAxis_1, &member_payload);
-              }
-              if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
-                accept_member_payload(p, ImPlotYAxis_1, static_cast<MemberPayload *>(payload->Data));
-              }
-              ImPlot::EndDragDropTarget();
-            }
-            for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2, ImPlotYAxis_3}) {
-              if (ImPlot::BeginDragDropTargetY(axis)) {
-                if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-                  auto topic_name = std::string(static_cast<char *>(payload->Data));
-                  MemberPayload member_payload {
-                    .topic_name = topic_name.c_str(),
-                    .member_index = 1,
-                  };
-                  accept_member_payload(p, axis, &member_payload);
-                }
-                if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
-                  accept_member_payload(p, axis, static_cast<MemberPayload *>(payload->Data));
-                }
-                ImPlot::EndDragDropTarget();
-              }
-            }
-            for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-              auto & axis_config = plot.axes[a];
-              // store the potentially user-defined limit
-              {
-                auto limits = ImPlot::GetPlotLimits(a);
-                axis_config.y_min = limits.Y.Min;
-                axis_config.y_max = limits.Y.Max;
-              }
-            }
-            ImPlot::EndPlot();
-          }
-        }
       }
       ImGui::End();
+
+      auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
+      auto t = node_->now();
+      auto end_sec = t.seconds();
+      auto start = t - history_dur;
+      auto start_sec = start.seconds();
+
+      size_t n_ticks = static_cast<size_t>(config_.history_length);
+      history_tick_values_.resize(n_ticks);
+      if (n_ticks != history_tick_labels_.size()) {
+        history_tick_labels_.resize(n_ticks);
+        for (size_t i = 0; i < n_ticks; i++) {
+          history_tick_labels_[i] =
+            std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
+        }
+      }
+      for (size_t i = 0; i < n_ticks; i++) {
+        history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
+      }
+
+      std::vector<char const *> tick_cstrings;
+      tick_cstrings.reserve(history_tick_labels_.size());
+      for (const auto & labels : history_tick_labels_) {
+        tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
+      }
+
+      for (size_t i = 0; i < config_.plots.size(); i++) {
+        auto & plot = config_.plots[i];
+        ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
+        ImPlot::SetNextPlotTicksX(
+          history_tick_values_.data(),
+          history_tick_values_.size(), tick_cstrings.data());
+
+        plot_view(i, plot, start);
+      }
     }
   }
 
-  void accept_member_payload(size_t plot_index, ImPlotYAxis axis, MemberPayload * payload)
+  void accept_member_payload(PlotConfig & plot_config, ImPlotYAxis axis, MemberPayload * payload)
   {
     auto message_type = available_topics_to_types_.at(payload->topic_name);
     auto introspection = message_type_to_introspection_.at(message_type);
     auto member_infos = introspection->begin_member_infos();
     std::advance(member_infos, payload->member_index);
     node_->add_topic_field(payload->topic_name, introspection, *member_infos);
-    config_.plots[plot_index].sources.push_back(DataSourceConfig {
-      .topic_name = payload->topic_name,
-      .member_path = member_infos->path,
-      .axis = axis,
-    });
+    plot_config.sources.push_back(
+      DataSourceConfig {
+        .topic_name = payload->topic_name,
+        .member_path = member_infos->path,
+        .axis = axis,
+      });
   }
 
   int run()

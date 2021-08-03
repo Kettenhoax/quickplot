@@ -7,4 +7,5 @@ TODOs
 * [ ] show error states on topic communication
 * [ ] warning if timestamps are out of frame
 * [ ] warning about NaN values
-* [ ] pausability
+* [ ] pausing function
+* [ ] plot length of vector
