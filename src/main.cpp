@@ -310,29 +310,31 @@ public:
       if (ImPlot::BeginPlot(
           id.c_str(), "t (header.stamp sec)", nullptr, ImVec2(-1, -1),
           (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
-          (plot.axes.size() >= 3 ? ImPlotFlags_YAxis3 : 0)))
+          (plot.axes.size() >= 3 ? ImPlotFlags_YAxis3 : 0) | ImPlotFlags_NoTitle))
       {
         for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-          for (const auto & source_config : plot.sources) {
-            if (source_config.axis == a) {
+          for (auto source_it = plot.sources.begin(); source_it != plot.sources.end(); ) {
+            bool removed = false;
+            if (source_it->axis == a) {
               std::stringstream ss;
-              ss << source_config.topic_name << " " << boost::algorithm::join(
-                source_config.member_path, ".");
+              ss << source_it->topic_name << " " << boost::algorithm::join(
+                source_it->member_path, ".");
 
               ImPlot::SetPlotYAxis(a);
 
               std::unique_lock<std::mutex> lock(node_->topic_mutex);
-              auto it = node_->topics_to_subscriptions.find(source_config.topic_name);
+              auto it = node_->topics_to_subscriptions.find(source_it->topic_name);
+              std::string series_label;
               if (it == node_->topics_to_subscriptions.end()) {
                 // plot empty line to show warning in legend
                 ss << " (not received)";
-                auto series_label = ss.str();
+                series_label = ss.str();
                 ImPlot::HideNextItem(true, ImGuiCond_Always);
                 ImPlot::PlotLine(series_label.c_str(), static_cast<float *>(nullptr), 0);
               } else {
-                auto & buffer = it->second.get_buffer(source_config.member_path);
+                auto & buffer = it->second.get_buffer(source_it->member_path);
                 buffer.clear_data_up_to(t);
-                auto series_label = ss.str();
+                series_label = ss.str();
                 {
                   std::unique_lock<std::mutex> lock(buffer.data_mutex);
                   ImPlot::PlotLineG(
@@ -342,6 +344,17 @@ public:
                     buffer.data.size());
                 }
               }
+
+              if (ImPlot::BeginLegendPopup(series_label.c_str())) {
+                if (ImGui::Button("remove")) {
+                  source_it = plot.sources.erase(source_it);
+                  removed = true;
+                }
+                ImPlot::EndLegendPopup();
+              }
+            }
+            if (!removed) {
+              ++source_it;
             }
           }
         }
@@ -448,15 +461,6 @@ public:
         }
       }
       ImGui::End();
-      if (ImGui::Begin("plot view0")) {
-        ImGui::InputDouble(
-          "history", &edited_history_length_, 1, 10, "%.1f s",
-          ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_CharsNoBlank);
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-          config_.history_length = edited_history_length_;
-        }
-      }
-      ImGui::End();
 
       auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
       auto t = node_->now();
@@ -546,7 +550,6 @@ public:
     io.IniFilename = imgui_ini_path_.c_str();
 
     ImGui::StyleColorsDark();
-    // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
@@ -558,11 +561,6 @@ public:
         rclcpp::shutdown();
         break;
       }
-      // Poll and handle events (inputs, window resize, etc.)
-      // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
-      // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
-      // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
-      // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
       glfwPollEvents();
 
       ImGui_ImplOpenGL3_NewFrame();
@@ -585,7 +583,7 @@ public:
       glfwSwapBuffers(window);
     }
 
-    // save before closing
+    // save configuration before closing
     save_application_config();
 
     ImGui_ImplOpenGL3_Shutdown();
