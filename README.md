@@ -5,6 +5,7 @@ TODOs
 Bugs and bug sources
 
 * [ ] initial window dockspaces visible
+* [ ] avoid field duplicates in config files
 * [ ] handle errors in configuration file and display on GUI
 * [ ] show error states on topic communication
 * [ ] warning about NaN values

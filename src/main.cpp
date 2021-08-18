@@ -438,6 +438,8 @@ public:
       add_topics_from_queue();
     }
 
+    ImGui::ShowDemoWindow();
+
     if (ImGui::Begin("topic list")) {
       for (const auto & [topic, type] : available_topics_to_types_) {
         if (ImGui::TreeNode(topic.c_str())) {
@@ -454,12 +456,18 @@ public:
             it != introspection->end_member_infos(); ++it, ++i)
           {
             std::string member_formatted = boost::algorithm::join(it->path, ".");
-            ImGui::Text("%s", member_formatted.c_str());
+            ImGui::Selectable(member_formatted.c_str(), false);
+            if (ImGui::IsItemHovered()) {
+              ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+            MemberPayload payload {
+              .topic_name = topic.c_str(),
+              .member_index = i,
+            };
+            if (ImGui::IsItemActivated()) {
+              activate_topic_field(payload);
+            }
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-              MemberPayload payload {
-                .topic_name = topic.c_str(),
-                .member_index = i,
-              };
               ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
               ImGui::EndDragDropSource();
             }
@@ -467,43 +475,52 @@ public:
           ImGui::TreePop();
         }
       }
-      ImGui::End();
+    }
+    ImGui::End();
 
-      auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
-      auto t = node_->now();
-      auto end_sec = t.seconds();
-      auto start = t - history_dur;
-      auto start_sec = start.seconds();
+    auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
+    auto t = node_->now();
+    auto end_sec = t.seconds();
+    auto start = t - history_dur;
+    auto start_sec = start.seconds();
 
-      size_t n_ticks = static_cast<size_t>(config_.history_length);
-      history_tick_values_.resize(n_ticks);
-      if (n_ticks != history_tick_labels_.size()) {
-        history_tick_labels_.resize(n_ticks);
-        for (size_t i = 0; i < n_ticks; i++) {
-          history_tick_labels_[i] =
-            std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
-        }
-      }
+    size_t n_ticks = static_cast<size_t>(config_.history_length);
+    history_tick_values_.resize(n_ticks);
+    if (n_ticks != history_tick_labels_.size()) {
+      history_tick_labels_.resize(n_ticks);
       for (size_t i = 0; i < n_ticks; i++) {
-        history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
-      }
-
-      std::vector<char const *> tick_cstrings;
-      tick_cstrings.reserve(history_tick_labels_.size());
-      for (const auto & labels : history_tick_labels_) {
-        tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
-      }
-
-      for (size_t i = 0; i < config_.plots.size(); i++) {
-        auto & plot = config_.plots[i];
-        ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-        ImPlot::SetNextPlotTicksX(
-          history_tick_values_.data(),
-          history_tick_values_.size(), tick_cstrings.data());
-
-        plot_view(i, plot, start);
+        history_tick_labels_[i] =
+          std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
       }
     }
+    for (size_t i = 0; i < n_ticks; i++) {
+      history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
+    }
+
+    std::vector<char const *> tick_cstrings;
+    tick_cstrings.reserve(history_tick_labels_.size());
+    for (const auto & labels : history_tick_labels_) {
+      tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
+    }
+
+    for (size_t i = 0; i < config_.plots.size(); i++) {
+      auto & plot = config_.plots[i];
+      ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
+      ImPlot::SetNextPlotTicksX(
+        history_tick_values_.data(),
+        history_tick_values_.size(), tick_cstrings.data());
+
+      plot_view(i, plot, start);
+    }
+  }
+
+  void activate_topic_field(MemberPayload payload)
+  {
+    if (config_.plots.empty()) {
+      auto& plot_config = config_.plots.emplace_back();
+      plot_config.axes = {AxisConfig{.y_min = -1, .y_max = 1}};
+    }
+    accept_member_payload(config_.plots[0], ImPlotYAxis_1, &payload);
   }
 
   void accept_member_payload(PlotConfig & plot_config, ImPlotYAxis axis, MemberPayload * payload)
