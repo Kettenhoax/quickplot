@@ -1,7 +1,10 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <filesystem>
 #include <rclcpp/duration.hpp>
+
+namespace fs = std::filesystem;
 
 namespace quickplot
 {
@@ -40,14 +43,14 @@ struct ApplicationConfig
   std::vector<PlotConfig> plots;
 };
 
-std::string get_default_config_directory();
+fs::path get_default_config_directory();
 
-std::string get_default_config_path();
+fs::path get_default_config_path();
 
 ApplicationConfig default_config();
 
-void save_config(ApplicationConfig, std::string);
+void save_config(ApplicationConfig, fs::path);
 
-ApplicationConfig load_config(std::string);
+ApplicationConfig load_config(fs::path);
 
 } // namespace quickplot

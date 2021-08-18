@@ -21,6 +21,7 @@
 #include "quickplot/config.hpp"
 #include <boost/circular_buffer.hpp>
 
+namespace fs = std::filesystem;
 using std::placeholders::_1;
 
 namespace quickplot
@@ -190,13 +191,15 @@ struct MemberPayload
   size_t member_index;
 };
 
-void print_exception_recursive(const std::exception & e, int level = 0)
+void print_exception_recursive(const std::exception & e, int level = 0, int after_level = 0)
 {
-  std::cerr << std::string(level, ' ') << e.what() << '\n';
+  if (level >= after_level) {
+    std::cerr << std::string(level, ' ') << e.what() << '\n';
+  }
   try {
     std::rethrow_if_nested(e);
   } catch (const std::exception & e) {
-    print_exception_recursive(e, level + 1);
+    print_exception_recursive(e, level + 1, after_level);
   } catch (...) {
   }
 }
@@ -204,10 +207,11 @@ void print_exception_recursive(const std::exception & e, int level = 0)
 class Application
 {
 private:
+  fs::path active_config_file_;
+  ApplicationConfig config_;
+
   std::shared_ptr<QuickPlotNode> node_;
   rclcpp::Event::SharedPtr graph_event_;
-
-  ApplicationConfig config_;
 
   std::string imgui_ini_path_;
   double edited_history_length_;
@@ -224,17 +228,16 @@ private:
   std::deque<DataSourceConfig> uninitialized_data_source_queue_;
 
 public:
-  explicit Application(std::shared_ptr<QuickPlotNode> _node)
-  : node_(_node)
+  explicit Application(fs::path config_file, std::shared_ptr<QuickPlotNode> _node)
+  : active_config_file_(config_file), node_(_node)
   {
     graph_event_ = node_->get_graph_event();
     graph_event_->set(); // set manually to trigger initial topics query
 
-    auto config_path = get_default_config_path();
     try {
-      config_ = load_config(config_path);
+      config_ = load_config(active_config_file_);
 
-      // TODO(ZeilingerM) resolve on-demand and don't overwrite config
+      // TODO(ZeilingerM) resolve topic name on-demand rather than overwriting config
       for (auto & plot : config_.plots) {
         for (auto & source: plot.sources) {
           source.topic_name = node_->get_node_topics_interface()->resolve_topic_name(
@@ -242,12 +245,13 @@ public:
         }
       }
     } catch (const config_error & e) {
-      print_exception_recursive(e);
-      std::cout << "Loading default configuration" << std::endl;
+      std::cerr << "Failed to read configuration from '" << config_file.c_str() << "'" << std::endl;
+      print_exception_recursive(e, 0, 1);
+      std::cout << "Using default configuration" << std::endl;
       config_ = default_config();
     }
     apply_config(config_);
-    imgui_ini_path_ = get_default_config_directory() + "/imgui.ini";
+    imgui_ini_path_ = get_default_config_directory().append("imgui.ini").string();
   }
 
   void apply_config(ApplicationConfig config)
@@ -293,7 +297,10 @@ public:
 
   void save_application_config()
   {
-    save_config(config_, get_default_config_path());
+    if (active_config_file_.has_parent_path()) {
+      fs::create_directories(active_config_file_.parent_path());
+    }
+    save_config(config_, active_config_file_);
   }
 
   void plot_view(size_t i, PlotConfig & plot, rclcpp::Time t)
@@ -602,12 +609,20 @@ public:
 
 int main(int argc, char ** argv)
 {
-  rclcpp::init(argc, argv);
+  auto non_ros_args = rclcpp::init_and_remove_ros_arguments(argc, argv);
   auto node = std::make_shared<quickplot::QuickPlotNode>();
   std::thread ros_thread([ = ] {
       rclcpp::spin(node);
     });
-  quickplot::Application app(node);
+
+  fs::path config_file;
+  if (non_ros_args.size() > 1) {
+    // non ROS arguments after the program name are interpreted as config file paths
+    config_file = non_ros_args[1];
+  } else {
+    config_file = quickplot::get_default_config_path();
+  }
+  quickplot::Application app(config_file, node);
   auto exit_code = app.run();
   ros_thread.join();
   return exit_code;

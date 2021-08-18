@@ -8,6 +8,8 @@
 #include <yaml-cpp/yaml.h>
 #include "quickplot/config.hpp"
 
+namespace fs = std::filesystem;
+
 namespace YAML
 {
 
@@ -102,7 +104,9 @@ struct convert<quickplot::ApplicationConfig>
 namespace quickplot
 {
 
-std::string get_home_directory()
+constexpr const char * APPLICATION_NAME = "quickplot";
+
+fs::path get_home_directory()
 {
   // https://stackoverflow.com/questions/2910377/get-home-directory-in-linux
   const char * homedir;
@@ -112,23 +116,26 @@ std::string get_home_directory()
   return homedir;
 }
 
-std::string get_default_config_directory()
+fs::path get_default_config_directory()
 {
-  return get_home_directory() + "/.quickplot";
+  const char * xdg_config_home;
+  if ((xdg_config_home = getenv("XDG_CONFIG_HOME")) == NULL) {
+    return get_home_directory().append(".config").append(APPLICATION_NAME);
+  }
+  return fs::path(xdg_config_home).append(APPLICATION_NAME);
 }
 
-std::string get_default_config_path()
+fs::path get_default_config_path()
 {
-  return get_default_config_directory() + "/default.yaml";
+  return get_default_config_directory().append("default.yaml");
 }
 
-void save_config(ApplicationConfig config, std::string path)
+void save_config(ApplicationConfig config, fs::path path)
 {
   std::ofstream fout;
+  std::ios_base::iostate errors = fout.exceptions() | std::ios::failbit;
+  fout.exceptions(errors);
   fout.open(path);
-  if (!fout.is_open()) {
-    throw std::invalid_argument("cannot save to path");
-  }
   YAML::Node node = YAML::convert<ApplicationConfig>::encode(config);
   fout << node;
   fout << std::endl;
@@ -143,11 +150,11 @@ ApplicationConfig default_config()
   };
 }
 
-ApplicationConfig load_config(std::string path)
+ApplicationConfig load_config(fs::path path)
 {
   // TODO(ZeilingerM) validate topic and member names
   try {
-    YAML::Node config = YAML::LoadFile(path);
+    YAML::Node config = YAML::LoadFile(path.string());
     return config.as<ApplicationConfig>();
   } catch (const YAML::Exception &) {
     std::throw_with_nested(config_error());
