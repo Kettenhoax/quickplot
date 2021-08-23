@@ -20,6 +20,8 @@
 #include "quickplot/message_parser.hpp"
 #include "quickplot/config.hpp"
 #include <boost/circular_buffer.hpp>
+#include <rcpputils/asserts.hpp>
+#include <libstatistics_collector/moving_average_statistics/moving_average.hpp>
 
 namespace fs = std::filesystem;
 using std::placeholders::_1;
@@ -28,13 +30,15 @@ namespace quickplot
 {
 
 using PlotDataCircularBuffer = boost::circular_buffer<ImPlotPoint>;
+using libstatistics_collector::moving_average_statistics::MovingAverageStatistics;
+using libstatistics_collector::moving_average_statistics::StatisticData;
 
 struct PlotDataBuffer
 {
   MessageMember member;
 
   // lock this mutex when accessing data from the plot buffer
-  std::mutex data_mutex;
+  mutable std::mutex data_mutex;
   PlotDataCircularBuffer data;
 
   PlotDataBuffer(MessageMember _member, size_t capacity)
@@ -57,17 +61,28 @@ struct PlotDataBuffer
   }
 };
 
+constexpr char TOPIC_NAME_PAYLOAD_LABEL[] = "quickplot_topic_name";
+constexpr char FIELD_INFO_PAYLOAD_LABEL[] = "quickplot_field_info";
+
 class PlotSubscription
 {
 private:
   std::vector<uint8_t> message_buffer_;
   std::shared_ptr<IntrospectionMessageDeserializer> deserializer_;
   rclcpp::GenericSubscription::SharedPtr subscription_;
-  std::mutex buffers_mutex_;
 
-  // one data buffer per plotted member of a message
-  // using list instead of vector, since the emplace_back operation does not require
-  // the element to be MoveConstructible for resizing the array
+  rclcpp::Time last_received_;
+  rclcpp::Clock steady_clock_{RCL_STEADY_TIME};
+  MovingAverageStatistics receive_period_stats_;
+
+  // protect access to list of buffers
+  mutable std::mutex buffers_mutex_;
+
+  // One data buffer per plotted member of a message.
+  //
+  // Using list instead of vector, since the emplace_back operation does not require
+  // the element to be MoveConstructible for resizing the array. The data buffer should
+  // not be move constructed.
   std::list<PlotDataBuffer> buffers;
 
 public:
@@ -121,8 +136,19 @@ public:
     throw std::invalid_argument("member not found by path");
   }
 
+  StatisticData receive_period_stats() const
+  {
+    return receive_period_stats_.GetStatistics();
+  }
+
   void receive_callback(std::shared_ptr<rclcpp::SerializedMessage> message)
   {
+    auto t_steady = steady_clock_.now();
+    if (last_received_.nanoseconds() != 0) {
+      receive_period_stats_.AddMeasurement((t_steady - last_received_).seconds());
+    }
+    last_received_ = t_steady;
+
     deserializer_->deserialize(*message, message_buffer_.data());
     rclcpp::Time stamp = deserializer_->get_header_stamp(message_buffer_.data());
     std::unique_lock<std::mutex> lock(buffers_mutex_);
@@ -221,7 +247,6 @@ private:
   std::unordered_map<std::string, std::string> available_topics_to_types_;
   std::unordered_map<std::string,
     std::shared_ptr<MessageIntrospection>> message_type_to_introspection_;
-  std::unordered_map<std::string, ImPlotPoint> active_topics_to_data_;
 
   // queue of requested topic data, for which the topic metadata has not been received yet
   std::mutex data_source_queue_mutex_;
@@ -410,6 +435,48 @@ public:
     ImGui::End();
   }
 
+  bool TopicEntry(const std::string & topic, const std::string & type)
+  {
+    if (ImGui::TreeNode(topic.c_str())) {
+      if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+        ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
+        ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
+        ImGui::SameLine();
+        ImGui::Text("Dragging %s", topic.c_str());
+        ImGui::EndDragDropSource();
+      }
+      auto introspection = message_type_to_introspection_.at(type);
+      size_t i {0};
+      for (auto it = introspection->begin_member_infos();
+        it != introspection->end_member_infos(); ++it, ++i)
+      {
+        std::string member_formatted = boost::algorithm::join(it->path, ".");
+        ImGui::Selectable(member_formatted.c_str(), false);
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+        MemberPayload payload {
+          .topic_name = topic.c_str(),
+          .member_index = i,
+        };
+        if (ImGui::IsItemActivated()) {
+          activate_topic_field(payload);
+        }
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+          ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
+          ImGui::EndDragDropSource();
+        }
+      }
+      return true;
+    }
+    return false;
+  }
+
+  void EndTopicEntry()
+  {
+    ImGui::TreePop();
+  }
+
   void update()
   {
     if (graph_event_->check_and_clear()) {
@@ -438,41 +505,31 @@ public:
       add_topics_from_queue();
     }
 
-    ImGui::ShowDemoWindow();
-
     if (ImGui::Begin("topic list")) {
-      for (const auto & [topic, type] : available_topics_to_types_) {
-        if (ImGui::TreeNode(topic.c_str())) {
-          if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-            ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
-            ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
-            ImGui::SameLine();
-            ImGui::Text("Dragging %s", topic.c_str());
-            ImGui::EndDragDropSource();
-          }
-          auto introspection = message_type_to_introspection_.at(type);
-          size_t i {0};
-          for (auto it = introspection->begin_member_infos();
-            it != introspection->end_member_infos(); ++it, ++i)
+      ImGui::Text("active topics");
+      for (const auto & [topic, subscription] : node_->topics_to_subscriptions) {
+        rcpputils::assert_true(
+          node_->topics_to_subscriptions.find(
+            topic) != node_->topics_to_subscriptions.end(),
+          "topics can only become active when their type is known");
+        auto type = available_topics_to_types_[topic];
+        if (TopicEntry(topic, type)) {
+
+          auto stats = subscription.receive_period_stats();
+          if (stats.standard_deviation < (stats.average / 10.0) && stats.average < 1.0 &&
+            stats.average > 0.001)
           {
-            std::string member_formatted = boost::algorithm::join(it->path, ".");
-            ImGui::Selectable(member_formatted.c_str(), false);
-            if (ImGui::IsItemHovered()) {
-              ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            }
-            MemberPayload payload {
-              .topic_name = topic.c_str(),
-              .member_index = i,
-            };
-            if (ImGui::IsItemActivated()) {
-              activate_topic_field(payload);
-            }
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-              ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
-              ImGui::EndDragDropSource();
-            }
+            ImGui::Text("%.1f hz", 1.0 / stats.average);
           }
-          ImGui::TreePop();
+          EndTopicEntry();
+        }
+      }
+      ImGui::Text("available topics");
+      for (const auto & [topic, type] : available_topics_to_types_) {
+        if (node_->topics_to_subscriptions.find(topic) != node_->topics_to_subscriptions.end()) {
+          if (TopicEntry(topic, type)) {
+            EndTopicEntry();
+          }
         }
       }
     }
@@ -517,7 +574,7 @@ public:
   void activate_topic_field(MemberPayload payload)
   {
     if (config_.plots.empty()) {
-      auto& plot_config = config_.plots.emplace_back();
+      auto & plot_config = config_.plots.emplace_back();
       plot_config.axes = {AxisConfig{.y_min = -1, .y_max = 1}};
     }
     accept_member_payload(config_.plots[0], ImPlotYAxis_1, &payload);
@@ -607,9 +664,6 @@ public:
       glfwSwapBuffers(window);
     }
 
-    // save configuration before closing
-    save_application_config();
-
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImPlot::DestroyContext();
@@ -641,6 +695,9 @@ int main(int argc, char ** argv)
   }
   quickplot::Application app(config_file, node);
   auto exit_code = app.run();
+
+  // save configuration before closing
+  app.save_application_config();
   ros_thread.join();
   return exit_code;
 }
