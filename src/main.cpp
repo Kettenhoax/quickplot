@@ -328,7 +328,7 @@ public:
     save_config(config_, active_config_file_);
   }
 
-  void plot_view(size_t i, PlotConfig & plot, rclcpp::Time t)
+  void plot_view(size_t i, PlotConfig & plot, rclcpp::Time t_start, rclcpp::Time t_end)
   {
     auto id = "plot" + std::to_string(i);
     if (ImGui::Begin(id.c_str())) {
@@ -339,8 +339,26 @@ public:
           ImGuiCond_Once, a);
       }
 
+      std::vector<char const *> tick_cstrings;
+      tick_cstrings.reserve(history_tick_labels_.size());
+      for (const auto & labels : history_tick_labels_) {
+        tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
+      }
+
+      auto start_sec = t_start.seconds();
+      auto end_sec = t_end.seconds();
+      ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
+      ImPlot::SetNextPlotTicksX(
+        history_tick_values_.data(),
+        history_tick_values_.size(), tick_cstrings.data());
+
+      std::stringstream x_label;
+      x_label << "t (header.stamp sec)";
+      if (node_->get_parameter("use_sim_time").as_bool()) {
+        x_label << " use_sim_time:=true";
+      }
       if (ImPlot::BeginPlot(
-          id.c_str(), "t (header.stamp sec)", nullptr, ImVec2(-1, -1),
+          id.c_str(), x_label.str().c_str(), nullptr, ImVec2(-1, -1),
           (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
           (plot.axes.size() >= 3 ? ImPlotFlags_YAxis3 : 0) | ImPlotFlags_NoTitle))
       {
@@ -371,7 +389,7 @@ public:
                 ImPlot::PlotLine(series_label.c_str(), static_cast<float *>(nullptr), 0);
               } else {
                 auto & buffer = it->second.get_buffer(source_it->member_path);
-                buffer.clear_data_up_to(t);
+                buffer.clear_data_up_to(t_start);
                 series_label = ss.str();
                 {
                   std::unique_lock<std::mutex> lock(buffer.data_mutex);
@@ -380,6 +398,21 @@ public:
                     &circular_buffer_access,
                     &buffer.data,
                     buffer.data.size());
+                  if (std::all_of(
+                      buffer.data.begin(), buffer.data.end(),
+                      [start_sec, end_sec](const ImPlotPoint & item) {
+                        return item.x < start_sec || item.x > end_sec;
+                      }))
+                  {
+                    // all points are outside of the time bounds
+                    // the most likely cause is a sim time misconfiguration
+                    auto warning_color = ImPlot::GetLastItemColor();
+                    ImPlot::AnnotateClamped(
+                      (end_sec - start_sec) / 2.0, 0.5, ImVec2(
+                        0,
+                        0), warning_color, "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
+                      source_it->topic_name.c_str());
+                  }
                 }
               }
 
@@ -513,29 +546,29 @@ public:
 
     if (ImGui::Begin("topic list")) {
       if (ImGui::CollapsingHeader("active topics", ImGuiTreeNodeFlags_DefaultOpen)) {
-      for (const auto & [topic, subscription] : node_->topics_to_subscriptions) {
-        rcpputils::assert_true(
-          node_->topics_to_subscriptions.find(
-            topic) != node_->topics_to_subscriptions.end(),
-          "topics can only become active when their type is known");
-        auto type = available_topics_to_types_[topic];
-        if (TopicEntry(topic, type)) {
+        for (const auto & [topic, subscription] : node_->topics_to_subscriptions) {
+          rcpputils::assert_true(
+            node_->topics_to_subscriptions.find(
+              topic) != node_->topics_to_subscriptions.end(),
+            "topics can only become active when their type is known");
+          auto type = available_topics_to_types_[topic];
+          if (TopicEntry(topic, type)) {
 
-          auto stats = subscription.receive_period_stats();
-          if (stats.standard_deviation < (stats.average / 10.0) && stats.average < 1.0 &&
-            stats.average > 0.001)
-          {
-            ImGui::Text("%.1f hz", 1.0 / stats.average);
+            auto stats = subscription.receive_period_stats();
+            if (stats.standard_deviation < (stats.average / 10.0) && stats.average < 1.0 &&
+              stats.average > 0.001)
+            {
+              ImGui::Text("%.1f hz", 1.0 / stats.average);
+            }
+            EndTopicEntry();
           }
-          EndTopicEntry();
         }
       }
-      }
       if (ImGui::CollapsingHeader("available topics", ImGuiTreeNodeFlags_DefaultOpen)) {
-      for (const auto & [topic, type] : available_topics_to_types_) {
+        for (const auto & [topic, type] : available_topics_to_types_) {
           if (node_->topics_to_subscriptions.find(topic) == node_->topics_to_subscriptions.end()) {
-          if (TopicEntry(topic, type)) {
-            EndTopicEntry();
+            if (TopicEntry(topic, type)) {
+              EndTopicEntry();
             }
           }
         }
@@ -547,7 +580,6 @@ public:
     auto t = node_->now();
     auto end_sec = t.seconds();
     auto start = t - history_dur;
-    auto start_sec = start.seconds();
 
     size_t n_ticks = static_cast<size_t>(config_.history_length);
     history_tick_values_.resize(n_ticks);
@@ -562,20 +594,8 @@ public:
       history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
     }
 
-    std::vector<char const *> tick_cstrings;
-    tick_cstrings.reserve(history_tick_labels_.size());
-    for (const auto & labels : history_tick_labels_) {
-      tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
-    }
-
     for (size_t i = 0; i < config_.plots.size(); i++) {
-      auto & plot = config_.plots[i];
-      ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-      ImPlot::SetNextPlotTicksX(
-        history_tick_values_.data(),
-        history_tick_values_.size(), tick_cstrings.data());
-
-      plot_view(i, plot, start);
+      plot_view(i, config_.plots[i], start, t);
     }
   }
 
