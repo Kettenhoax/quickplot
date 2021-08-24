@@ -14,8 +14,6 @@ Bugs and bug sources
 * [ ] warning if timestamps are out of frame (forgot use_sim_time if required)
 * [ ] store program config in ubuntu-recommended user directory rather than $HOME
 * [ ] avoid plot colors
-* [ ] /clock resets should trigger data clear
-* [ ] add sim time note at time axis
 * [ ] multiple remove buttons?
 
 features

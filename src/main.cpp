@@ -163,6 +163,15 @@ public:
           deserializer_->get_numeric(message_buffer_.data(), buffer.member.info)));
     }
   }
+
+  void clear_all_data()
+  {
+    std::unique_lock<std::mutex> lock(buffers_mutex_);
+    for (auto & buffer : buffers) {
+      std::unique_lock<std::mutex> lock(buffer.data_mutex);
+      buffer.data.clear();
+    }
+  }
 };
 
 class QuickPlotNode : public rclcpp::Node
@@ -238,6 +247,7 @@ private:
 
   std::shared_ptr<QuickPlotNode> node_;
   rclcpp::Event::SharedPtr graph_event_;
+  rclcpp::JumpHandler::SharedPtr jump_handler_;
 
   std::string imgui_ini_path_;
   double edited_history_length_;
@@ -259,6 +269,17 @@ public:
     graph_event_ = node_->get_graph_event();
     graph_event_->set(); // set manually to trigger initial topics query
 
+    jump_handler_ = node_->get_clock()->create_jump_callback(
+      [] {}, std::bind(&Application::on_time_jump, this, _1), rcl_jump_threshold_t {
+        .on_clock_change = true,
+        .min_forward = {
+          .nanoseconds = RCUTILS_S_TO_NS(1),
+        },
+        .min_backward = {
+          .nanoseconds = -RCUTILS_S_TO_NS(1),
+        },
+      });
+
     try {
       config_ = load_config(active_config_file_);
 
@@ -277,6 +298,22 @@ public:
     }
     apply_config(config_);
     imgui_ini_path_ = get_default_config_directory().append("imgui.ini").string();
+  }
+
+  void on_time_jump(const rcl_time_jump_t & time_jump)
+  {
+    std::cerr << "time jump occured ";
+    if (time_jump.clock_change == RCL_ROS_TIME_ACTIVATED ||
+      time_jump.clock_change == RCL_ROS_TIME_DEACTIVATED)
+    {
+      std::cerr << "due to clock change";
+    } else {
+      std::cerr << "by a delta of " << time_jump.delta.nanoseconds << "ns";
+    }
+    std::cerr << ", clearing all data" << std::endl;
+    for (auto & [_, subscription]: node_->topics_to_subscriptions) {
+      subscription.clear_all_data();
+    }
   }
 
   void apply_config(ApplicationConfig config)
@@ -362,6 +399,12 @@ public:
           (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
           (plot.axes.size() >= 3 ? ImPlotFlags_YAxis3 : 0) | ImPlotFlags_NoTitle))
       {
+        if (ImPlot::IsPlotXAxisHovered()) {
+          ImGui::BeginTooltip();
+
+          ImGui::Text("now: %.2f", t_end.seconds());
+          ImGui::EndTooltip();
+        }
         for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
           for (auto source_it = plot.sources.begin(); source_it != plot.sources.end(); ) {
             bool removed = false;
@@ -371,12 +414,6 @@ public:
                 source_it->member_path, ".");
 
               ImPlot::SetPlotYAxis(a);
-              if (ImPlot::IsPlotXAxisHovered()) {
-                ImGui::BeginTooltip();
-
-                ImGui::Text("now: %.2f", t_end.seconds());
-                ImGui::EndTooltip();
-              }
 
               std::unique_lock<std::mutex> lock(node_->topic_mutex);
               auto it = node_->topics_to_subscriptions.find(source_it->topic_name);
@@ -398,20 +435,22 @@ public:
                     &circular_buffer_access,
                     &buffer.data,
                     buffer.data.size());
-                  if (std::all_of(
-                      buffer.data.begin(), buffer.data.end(),
-                      [start_sec, end_sec](const ImPlotPoint & item) {
-                        return item.x < start_sec || item.x > end_sec;
-                      }))
-                  {
-                    // all points are outside of the time bounds
-                    // the most likely cause is a sim time misconfiguration
-                    auto warning_color = ImPlot::GetLastItemColor();
-                    ImPlot::AnnotateClamped(
-                      (end_sec - start_sec) / 2.0, 0.5, ImVec2(
-                        0,
-                        0), warning_color, "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
-                      source_it->topic_name.c_str());
+                  if (!buffer.data.empty()) {
+                    if (std::all_of(
+                        buffer.data.begin(), buffer.data.end(),
+                        [start_sec, end_sec](const ImPlotPoint & item) {
+                          return item.x < start_sec || item.x > end_sec;
+                        }))
+                    {
+                      // all points are outside of the time bounds
+                      // the most likely cause is a sim time misconfiguration
+                      auto warning_color = ImPlot::GetLastItemColor();
+                      ImPlot::AnnotateClamped(
+                        (end_sec - start_sec) / 2.0, 0.5, ImVec2(
+                          0,
+                          0), warning_color, "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
+                        source_it->topic_name.c_str());
+                    }
                   }
                 }
               }
