@@ -506,7 +506,7 @@ public:
     }
 
     if (ImGui::Begin("topic list")) {
-      ImGui::Text("active topics");
+      if (ImGui::CollapsingHeader("active topics", ImGuiTreeNodeFlags_DefaultOpen)) {
       for (const auto & [topic, subscription] : node_->topics_to_subscriptions) {
         rcpputils::assert_true(
           node_->topics_to_subscriptions.find(
@@ -524,7 +524,8 @@ public:
           EndTopicEntry();
         }
       }
-      ImGui::Text("available topics");
+      }
+      if (ImGui::CollapsingHeader("available topics", ImGuiTreeNodeFlags_DefaultOpen)) {
       for (const auto & [topic, type] : available_topics_to_types_) {
           if (node_->topics_to_subscriptions.find(topic) == node_->topics_to_subscriptions.end()) {
           if (TopicEntry(topic, type)) {
