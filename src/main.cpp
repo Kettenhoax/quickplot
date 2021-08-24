@@ -353,6 +353,12 @@ public:
                 source_it->member_path, ".");
 
               ImPlot::SetPlotYAxis(a);
+              if (ImPlot::IsPlotXAxisHovered()) {
+                ImGui::BeginTooltip();
+
+                ImGui::Text("now: %.2f", t_end.seconds());
+                ImGui::EndTooltip();
+              }
 
               std::unique_lock<std::mutex> lock(node_->topic_mutex);
               auto it = node_->topics_to_subscriptions.find(source_it->topic_name);
