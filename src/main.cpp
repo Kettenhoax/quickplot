@@ -526,9 +526,10 @@ public:
       }
       ImGui::Text("available topics");
       for (const auto & [topic, type] : available_topics_to_types_) {
-        if (node_->topics_to_subscriptions.find(topic) != node_->topics_to_subscriptions.end()) {
+          if (node_->topics_to_subscriptions.find(topic) == node_->topics_to_subscriptions.end()) {
           if (TopicEntry(topic, type)) {
             EndTopicEntry();
+            }
           }
         }
       }
