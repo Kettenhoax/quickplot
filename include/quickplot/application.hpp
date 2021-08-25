@@ -1,51 +1,22 @@
-
-#include <boost/algorithm/string/join.hpp>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <memory>
 #include <deque>
 #include <list>
-#include <vector>
 #include <unordered_map>
 #include <filesystem>
 #include <rosidl_typesupport_cpp/identifier.hpp>
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
 #include "quickplot/config.hpp"
 #include "quickplot/node.hpp"
+#include "quickplot/plot_view.hpp"
 #include <rcpputils/asserts.hpp>
 
 namespace fs = std::filesystem;
 
 namespace quickplot
 {
-constexpr char TOPIC_NAME_PAYLOAD_LABEL[] = "quickplot_topic_name";
-constexpr char FIELD_INFO_PAYLOAD_LABEL[] = "quickplot_field_info";
-
-ImPlotPoint circular_buffer_access(void * data, int idx)
-{
-  auto buffer = reinterpret_cast<PlotDataCircularBuffer *>(data);
-  return buffer->at(idx);
-}
-
-struct MemberPayload
-{
-  const char * topic_name;
-  size_t member_index;
-};
-
-void print_exception_recursive(const std::exception & e, int level = 0, int after_level = 0)
-{
-  if (level >= after_level) {
-    std::cerr << std::string(level, ' ') << e.what() << '\n';
-  }
-  try {
-    std::rethrow_if_nested(e);
-  } catch (const std::exception & e) {
-    print_exception_recursive(e, level + 1, after_level);
-  } catch (...) {
-  }
-}
 
 class Application
 {
@@ -58,8 +29,6 @@ private:
   rclcpp::JumpHandler::SharedPtr jump_handler_;
 
   double edited_history_length_;
-  std::vector<double> history_tick_values_;
-  std::vector<std::string> history_tick_labels_;
 
   std::unordered_map<std::string, std::string> available_topics_to_types_;
   std::unordered_map<std::string,
@@ -171,154 +140,6 @@ public:
     save_config(config_, active_config_file_);
   }
 
-  void plot_view(size_t i, PlotConfig & plot, rclcpp::Time t_start, rclcpp::Time t_end)
-  {
-    auto id = "plot" + std::to_string(i);
-    if (ImGui::Begin(id.c_str())) {
-      for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-        const auto & axis_config = plot.axes[a];
-        ImPlot::SetNextPlotLimitsY(
-          axis_config.y_min, axis_config.y_max,
-          ImGuiCond_Once, a);
-      }
-
-      std::vector<char const *> tick_cstrings;
-      tick_cstrings.reserve(history_tick_labels_.size());
-      for (const auto & labels : history_tick_labels_) {
-        tick_cstrings.push_back(const_cast<char *>(labels.c_str()));
-      }
-
-      auto start_sec = t_start.seconds();
-      auto end_sec = t_end.seconds();
-      ImPlot::SetNextPlotLimitsX(start_sec, end_sec, ImGuiCond_Always);
-      ImPlot::SetNextPlotTicksX(
-        history_tick_values_.data(),
-        history_tick_values_.size(), tick_cstrings.data());
-
-      std::stringstream x_label;
-      x_label << "t (header.stamp sec)";
-      if (node_->get_parameter("use_sim_time").as_bool()) {
-        x_label << " use_sim_time:=true";
-      }
-      if (ImPlot::BeginPlot(
-          id.c_str(), x_label.str().c_str(), nullptr, ImVec2(-1, -1),
-          (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
-          (plot.axes.size() >= 3 ? ImPlotFlags_YAxis3 : 0) | ImPlotFlags_NoTitle))
-      {
-        if (ImPlot::IsPlotXAxisHovered()) {
-          ImGui::BeginTooltip();
-
-          ImGui::Text("now: %.2f", t_end.seconds());
-          ImGui::EndTooltip();
-        }
-        for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-          for (auto source_it = plot.sources.begin(); source_it != plot.sources.end(); ) {
-            bool removed = false;
-            if (source_it->axis == a) {
-              std::stringstream ss;
-              ss << source_it->topic_name << " " << boost::algorithm::join(
-                source_it->member_path, ".");
-
-              ImPlot::SetPlotYAxis(a);
-
-              std::unique_lock<std::mutex> lock(node_->topic_mutex);
-              auto it = node_->topics_to_subscriptions.find(source_it->topic_name);
-              std::string series_label;
-              if (it == node_->topics_to_subscriptions.end()) {
-                // plot empty line to show warning in legend
-                ss << " (not received)";
-                series_label = ss.str();
-                ImPlot::HideNextItem(true, ImGuiCond_Always);
-                ImPlot::PlotLine(series_label.c_str(), static_cast<float *>(nullptr), 0);
-              } else {
-                auto & buffer = it->second.get_buffer(source_it->member_path);
-                buffer.clear_data_up_to(t_start);
-                series_label = ss.str();
-                {
-                  std::unique_lock<std::mutex> lock(buffer.data_mutex);
-                  ImPlot::PlotLineG(
-                    series_label.c_str(),
-                    &circular_buffer_access,
-                    &buffer.data,
-                    buffer.data.size());
-                  if (!buffer.data.empty()) {
-                    if (std::all_of(
-                        buffer.data.begin(), buffer.data.end(),
-                        [start_sec, end_sec](const ImPlotPoint & item) {
-                          return item.x < start_sec || item.x > end_sec;
-                        }))
-                    {
-                      // all points are outside of the time bounds
-                      // the most likely cause is a sim time misconfiguration
-                      auto warning_color = ImPlot::GetLastItemColor();
-                      ImPlot::AnnotateClamped(
-                        (end_sec - start_sec) / 2.0, 0.5, ImVec2(
-                          0,
-                          0), warning_color, "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
-                        source_it->topic_name.c_str());
-                    }
-                  }
-                }
-              }
-
-              if (ImPlot::BeginLegendPopup(series_label.c_str())) {
-                if (ImGui::Button("remove")) {
-                  source_it = plot.sources.erase(source_it);
-                  removed = true;
-                }
-                ImPlot::EndLegendPopup();
-              }
-            }
-            if (!removed) {
-              ++source_it;
-            }
-          }
-        }
-        if (ImPlot::BeginDragDropTarget()) {
-          if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-            auto topic_name = std::string(static_cast<char *>(payload->Data));
-            MemberPayload member_payload {
-              .topic_name = topic_name.c_str(),
-              .member_index = 1,
-            };
-            accept_member_payload(plot, ImPlotYAxis_1, &member_payload);
-          }
-          if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
-            accept_member_payload(plot, ImPlotYAxis_1, static_cast<MemberPayload *>(payload->Data));
-          }
-          ImPlot::EndDragDropTarget();
-        }
-        for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2, ImPlotYAxis_3}) {
-          if (ImPlot::BeginDragDropTargetY(axis)) {
-            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-              auto topic_name = std::string(static_cast<char *>(payload->Data));
-              MemberPayload member_payload {
-                .topic_name = topic_name.c_str(),
-                .member_index = 1,
-              };
-              accept_member_payload(plot, axis, &member_payload);
-            }
-            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
-              accept_member_payload(plot, axis, static_cast<MemberPayload *>(payload->Data));
-            }
-            ImPlot::EndDragDropTarget();
-          }
-        }
-        for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-          auto & axis_config = plot.axes[a];
-          // store the potentially user-defined limit
-          {
-            auto limits = ImPlot::GetPlotLimits(a);
-            axis_config.y_min = limits.Y.Min;
-            axis_config.y_max = limits.Y.Max;
-          }
-        }
-        ImPlot::EndPlot();
-      }
-    }
-    ImGui::End();
-  }
-
   bool TopicEntry(const std::string & topic, const std::string & type)
   {
     if (ImGui::TreeNode(topic.c_str())) {
@@ -421,26 +242,57 @@ public:
     }
     ImGui::End();
 
-    auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
     auto t = node_->now();
-    auto end_sec = t.seconds();
-    auto start = t - history_dur;
-
-    size_t n_ticks = static_cast<size_t>(config_.history_length);
-    history_tick_values_.resize(n_ticks);
-    if (n_ticks != history_tick_labels_.size()) {
-      history_tick_labels_.resize(n_ticks);
-      for (size_t i = 0; i < n_ticks; i++) {
-        history_tick_labels_[i] =
-          std::to_string(-static_cast<int>(n_ticks) + static_cast<int>(i));
-      }
-    }
-    for (size_t i = 0; i < n_ticks; i++) {
-      history_tick_values_[i] = end_sec - static_cast<int>(n_ticks) + i;
-    }
+    auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
 
     for (size_t i = 0; i < config_.plots.size(); i++) {
-      plot_view(i, config_.plots[i], start, t);
+      auto id = "plot" + std::to_string(i);
+      auto & plot_config = config_.plots[i];
+      if (ImGui::Begin(id.c_str())) {
+        auto plot_opts = PlotViewOptions {
+          .use_sim_time = node_->get_parameter("use_sim_time").as_bool(),
+          .t_start = t - history_dur,
+          .t_end = t
+        };
+        if (PlotView(id.c_str(), node_, plot_config, plot_opts)) {
+          if (ImPlot::BeginDragDropTarget()) {
+            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+              auto topic_name = std::string(static_cast<char *>(payload->Data));
+              MemberPayload member_payload {
+                .topic_name = topic_name.c_str(),
+                .member_index = 1,
+              };
+              accept_member_payload(plot_config, ImPlotYAxis_1, &member_payload);
+            }
+            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+              accept_member_payload(
+                plot_config, ImPlotYAxis_1,
+                static_cast<MemberPayload *>(payload->Data));
+            }
+            ImPlot::EndDragDropTarget();
+          }
+          for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2, ImPlotYAxis_3}) {
+            if (ImPlot::BeginDragDropTargetY(axis)) {
+              if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
+                auto topic_name = std::string(static_cast<char *>(payload->Data));
+                MemberPayload member_payload {
+                  .topic_name = topic_name.c_str(),
+                  .member_index = 1,
+                };
+                accept_member_payload(plot_config, axis, &member_payload);
+              }
+              if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+                accept_member_payload(
+                  plot_config, axis,
+                  static_cast<MemberPayload *>(payload->Data));
+              }
+              ImPlot::EndDragDropTarget();
+            }
+          }
+          EndPlotView();
+        }
+      }
+      ImGui::End();
     }
   }
 
