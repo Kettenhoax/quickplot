@@ -229,9 +229,11 @@ void IntrospectionMessageDeserializer::deserialize(
   deserializer_->deserialize_message(&serialized_message, message);
 }
 
-rclcpp::Time IntrospectionMessageDeserializer::get_header_stamp(void * message) const
+std::optional<rclcpp::Time> IntrospectionMessageDeserializer::get_header_stamp(void * message) const
 {
-  assert(header_offset_.has_value());
+  if (!header_offset_.has_value()) {
+    return {};
+  }
   auto bytes = static_cast<uint8_t *>(message);
   auto header =
     static_cast<std_msgs::msg::Header *>(static_cast<void *>(bytes + header_offset_.value()));

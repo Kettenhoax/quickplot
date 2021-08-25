@@ -36,7 +36,7 @@ public:
     }
     auto it = topics_to_subscriptions.try_emplace(
       topic,
-      topic, get_node_topics_interface(), type_to_parsers_.at(message_type));
+      topic, get_node_topics_interface(), get_node_clock_interface(), type_to_parsers_.at(message_type));
     auto & subscription = it.first->second;
     size_t capacity = 10; // TODO(ZeilingerM) compute capacity from expected frequencies
     subscription.add_field(member, capacity);

@@ -247,7 +247,7 @@ public:
 
   void deserialize(const rclcpp::SerializedMessage &, void * message) const;
 
-  rclcpp::Time get_header_stamp(void * message) const;
+  std::optional<rclcpp::Time> get_header_stamp(void * message) const;
 
   double get_numeric(void * message, MessageMemberInfo info) const;
 };

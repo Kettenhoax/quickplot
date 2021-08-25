@@ -11,8 +11,6 @@ Bugs and bug sources
 * [ ] handle errors in configuration file and display on GUI
 * [ ] show error states on topic communication
 * [ ] warning about NaN values
-* [ ] warning if timestamps are out of frame (forgot use_sim_time if required)
-* [ ] store program config in ubuntu-recommended user directory rather than $HOME
 * [ ] avoid some plot colors
 * [ ] multiple remove buttons?
 

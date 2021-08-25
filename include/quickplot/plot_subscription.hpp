@@ -52,6 +52,7 @@ class PlotSubscription
 private:
   std::vector<uint8_t> message_buffer_;
   std::shared_ptr<IntrospectionMessageDeserializer> deserializer_;
+  rclcpp::node_interfaces::NodeClockInterface::SharedPtr node_clock_interface_;
   rclcpp::GenericSubscription::SharedPtr subscription_;
 
   rclcpp::Time last_received_;
@@ -72,8 +73,9 @@ public:
   explicit PlotSubscription(
     std::string topic_name,
     rclcpp::node_interfaces::NodeTopicsInterface::SharedPtr topics_interface,
+    rclcpp::node_interfaces::NodeClockInterface::SharedPtr clock_interface,
     std::shared_ptr<IntrospectionMessageDeserializer> deserializer)
-  : deserializer_(deserializer)
+  : deserializer_(deserializer), node_clock_interface_(clock_interface)
   {
     message_buffer_ = deserializer_->init_buffer();
     subscription_ = rclcpp::create_generic_subscription(
@@ -133,7 +135,13 @@ public:
     last_received_ = t_steady;
 
     deserializer_->deserialize(*message, message_buffer_.data());
-    rclcpp::Time stamp = deserializer_->get_header_stamp(message_buffer_.data());
+    auto stamp = deserializer_->get_header_stamp(message_buffer_.data());
+    rclcpp::Time t;
+    if (stamp.has_value()) {
+      t = stamp.value();
+    } else {
+      t = node_clock_interface_->get_clock()->now();
+    }
     std::unique_lock<std::mutex> lock(buffers_mutex_);
     for (auto & buffer : buffers) {
       std::unique_lock<std::mutex> lock(buffer.data_mutex);
@@ -142,7 +150,7 @@ public:
       }
       buffer.data.push_back(
         ImPlotPoint(
-          stamp.seconds(),
+          t.seconds(),
           deserializer_->get_numeric(message_buffer_.data(), buffer.member.info)));
     }
   }

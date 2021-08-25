@@ -71,7 +71,7 @@ TEST(test_parser, parse_twist_stamped_header_and_field)
 
   auto member_info = introspection->get_member_info({"twist", "linear", "x"});
   EXPECT_TRUE(member_info.has_value());
-  auto stamp = deserializer.get_header_stamp(buffer.data());
+  auto stamp = deserializer.get_header_stamp(buffer.data()).value();
   EXPECT_EQ(stamp, rclcpp::Time(99, 99, RCL_ROS_TIME));
   auto twist_linear_x_value = deserializer.get_numeric(buffer.data(), member_info.value());
   EXPECT_EQ(twist_linear_x_value, 1.0);
@@ -103,7 +103,7 @@ TEST(test_parser, parse_odometry_header_and_field)
   auto orientation_w_member = introspection->get_member_info({"pose", "pose", "orientation", "w"});
   EXPECT_TRUE(orientation_w_member.has_value());
 
-  auto stamp = deserializer.get_header_stamp(buffer.data());
+  auto stamp = deserializer.get_header_stamp(buffer.data()).value();
   EXPECT_EQ(stamp, rclcpp::Time(10, 1e9 - 1, RCL_ROS_TIME));
 
   auto position_y_value = deserializer.get_numeric(buffer.data(), position_y_member.value());
