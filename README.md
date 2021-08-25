@@ -13,7 +13,7 @@ Bugs and bug sources
 * [ ] warning about NaN values
 * [ ] warning if timestamps are out of frame (forgot use_sim_time if required)
 * [ ] store program config in ubuntu-recommended user directory rather than $HOME
-* [ ] avoid plot colors
+* [ ] avoid some plot colors
 * [ ] multiple remove buttons?
 
 features
@@ -23,6 +23,7 @@ features
 * [ ] pausing function
 * [ ] plot length of vector
 * [ ] unit suggestions based on convention
+* [ ] range suggestions based on unit (angles -pi to pi)
 * [ ] tooltip: click to add to plot i
 * [ ] suggest auto-fit if all y values are off-plot
 
