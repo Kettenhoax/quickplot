@@ -14,6 +14,6 @@ TEST(test_config, parse_example_config) {
   EXPECT_EQ(plot.axes[0].y_min, -2.0);
   EXPECT_EQ(plot.axes[0].y_max, 2.0);
   EXPECT_EQ(plot.sources.size(), 1lu);
-  EXPECT_EQ(plot.sources[0].topic_name, "test");
-  ASSERT_THAT(plot.sources[0].member_path, ::testing::ElementsAre("inner", "value"));
+  EXPECT_EQ(plot.sources.begin()->topic_name, "test");
+  ASSERT_THAT(plot.sources.begin()->member_path, ::testing::ElementsAre("inner", "value"));
 }

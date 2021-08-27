@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <pwd.h>
+#include <unordered_set>
 #include <string>
 #include <iostream>
 #include <vector>
@@ -12,6 +13,31 @@ namespace fs = std::filesystem;
 
 namespace YAML
 {
+
+template<typename Value>
+struct convert<std::unordered_set<Value>>
+{
+  static YAML::Node encode(const std::unordered_set<Value> & rhs)
+  {
+    Node node(NodeType::Sequence);
+    for (auto it = std::begin(rhs); it != std::end(rhs); ++it) {
+      node.push_back(*it);
+    }
+    return node;
+  }
+
+  static bool decode(const Node & node, std::unordered_set<Value> & rhs)
+  {
+    if (!node.IsSequence()) {
+      return false;
+    }
+    bool result = true;
+    for (auto it = node.begin(); it != node.end(); ++it) {
+      rhs.insert(it->as<Value>());
+    }
+    return result;
+  }
+};
 
 template<>
 struct convert<quickplot::DataSourceConfig>
@@ -76,7 +102,7 @@ struct convert<quickplot::PlotConfig>
   static bool decode(const Node & node, quickplot::PlotConfig & s)
   {
     s.axes = node["axes"].as<std::vector<quickplot::AxisConfig>>();
-    s.sources = node["sources"].as<std::vector<quickplot::DataSourceConfig>>();
+    s.sources = node["sources"].as<std::unordered_set<quickplot::DataSourceConfig>>();
     return true;
   }
 };

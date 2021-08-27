@@ -84,13 +84,14 @@ bool PlotView(
         bool removed = false;
         if (source_it->axis == a) {
           std::stringstream ss;
-          ss << source_it->topic_name << " " << boost::algorithm::join(
+          auto resolved_topic = node->get_node_topics_interface()->resolve_topic_name(source_it->topic_name);
+          ss << resolved_topic << " " << boost::algorithm::join(
             source_it->member_path, ".");
 
           ImPlot::SetPlotYAxis(a);
 
           std::unique_lock<std::mutex> lock(node->topic_mutex);
-          auto it = node->topics_to_subscriptions.find(source_it->topic_name);
+          auto it = node->topics_to_subscriptions.find(resolved_topic);
           std::string series_label;
           if (it == node->topics_to_subscriptions.end()) {
             // plot empty line to show warning in legend

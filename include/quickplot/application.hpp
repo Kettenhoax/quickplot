@@ -58,14 +58,6 @@ public:
 
     try {
       config_ = load_config(active_config_file_);
-
-      // TODO(ZeilingerM) resolve topic name on-demand rather than overwriting config
-      for (auto & plot : config_.plots) {
-        for (auto & source: plot.sources) {
-          source.topic_name = node_->get_node_topics_interface()->resolve_topic_name(
-            source.topic_name);
-        }
-      }
     } catch (const config_error & e) {
       std::cerr << "Failed to read configuration from '" << config_file.c_str() << "'" << std::endl;
       print_exception_recursive(e, 0, 1);
@@ -111,7 +103,9 @@ public:
     for (auto it = uninitialized_data_source_queue_.begin();
       it != uninitialized_data_source_queue_.end(); )
     {
-      auto type_it = available_topics_to_types_.find(it->topic_name);
+      auto resolved_topic = node_->get_node_topics_interface()->resolve_topic_name(
+        it->topic_name);
+      auto type_it = available_topics_to_types_.find(resolved_topic);
       if (type_it != available_topics_to_types_.end()) {
         auto introspection = message_type_to_introspection_.at(type_it->second);
         MessageMember member;
@@ -119,8 +113,7 @@ public:
         if (member_info_opt.has_value()) {
           member.path = it->member_path;
           member.info = member_info_opt.value();
-          node_->add_topic_field(
-            it->topic_name, introspection, member);
+          node_->add_topic_field(resolved_topic, introspection, member);
         } else {
           // TODO(ZeilingerM) show error and warning on GUI
           throw std::invalid_argument("Could not find member in message type");
@@ -312,7 +305,7 @@ public:
     auto member_infos = introspection->begin_member_infos();
     std::advance(member_infos, payload->member_index);
     node_->add_topic_field(payload->topic_name, introspection, *member_infos);
-    plot_config.sources.push_back(
+    plot_config.sources.insert(
       DataSourceConfig {
         .topic_name = payload->topic_name,
         .member_path = member_infos->path,

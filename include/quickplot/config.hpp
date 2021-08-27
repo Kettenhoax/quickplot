@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <unordered_set>
 #include <filesystem>
 #include <rclcpp/duration.hpp>
 
@@ -23,7 +24,29 @@ struct DataSourceConfig
   std::vector<std::string> member_path;
   // axis 0, 1 or 2
   int axis;
+
+  inline bool operator==(const DataSourceConfig & other) const
+  {
+    return topic_name == other.topic_name && member_path == other.member_path && axis == other.axis;
+  }
 };
+
+} // namespace quickplot
+
+namespace std
+{
+template<>
+struct hash<quickplot::DataSourceConfig>
+{
+  inline size_t operator()(const quickplot::DataSourceConfig & config) const
+  {
+    return hash<std::string>().operator()(config.topic_name);
+  }
+};
+} // namespace std
+
+namespace quickplot
+{
 
 struct AxisConfig
 {
@@ -33,7 +56,7 @@ struct AxisConfig
 
 struct PlotConfig
 {
-  std::vector<DataSourceConfig> sources;
+  std::unordered_set<DataSourceConfig> sources;
   std::vector<AxisConfig> axes;
 };
 
