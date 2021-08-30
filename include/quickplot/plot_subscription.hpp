@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <memory>
 #include <deque>
 #include <list>
@@ -15,37 +16,109 @@
 namespace quickplot
 {
 using std::placeholders::_1;
-using PlotDataCircularBuffer = boost::circular_buffer<ImPlotPoint>;
+using CircularBuffer = boost::circular_buffer<ImPlotPoint>;
 using libstatistics_collector::moving_average_statistics::MovingAverageStatistics;
 using libstatistics_collector::moving_average_statistics::StatisticData;
 
-struct PlotDataBuffer
+class PlotDataBuffer;
+
+// Mutex-protected access to an immutable random-access-iterator of plot data
+class PlotDataContainer
 {
-  MessageMember member;
+private:
+  const PlotDataBuffer* parent_;
+  std::unique_lock<std::mutex> lock_;
 
+public:
+  explicit PlotDataContainer(const PlotDataBuffer* parent);
+
+  size_t size() const;
+
+  CircularBuffer::const_iterator begin() const;
+
+  CircularBuffer::const_iterator end() const;
+};
+
+// Provide mutex-protected access to a circular buffer of ImPlotPoint
+class PlotDataBuffer
+{
+  friend class PlotDataContainer;
+
+private:
   // lock this mutex when accessing data from the plot buffer
-  mutable std::mutex data_mutex;
-  PlotDataCircularBuffer data;
+  mutable std::mutex mutex_;
+  CircularBuffer data_;
 
-  PlotDataBuffer(MessageMember _member, size_t capacity)
-  : member(_member), data_mutex(), data(capacity)
+public:
+  explicit PlotDataBuffer(size_t capacity)
+  : mutex_(), data_(capacity)
   {
 
   }
 
+  PlotDataContainer data() const
+  {
+    return PlotDataContainer(this);
+  }
+
+  bool empty() const
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return data_.empty();
+  }
+
+  void push(double x, double y)
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (data_.full()) {
+      data_.set_capacity(data_.capacity() * 2);
+    }
+    data_.push_back(
+      ImPlotPoint(
+        x,
+        y));
+  }
+
   void clear_data_up_to(rclcpp::Time t)
   {
-    std::unique_lock<std::mutex> lock(data_mutex);
+    std::unique_lock<std::mutex> lock(mutex_);
     auto s = t.seconds();
-    while (!data.empty()) {
-      if (data.front().x < s) {
-        data.pop_front();
+    while (!data_.empty()) {
+      if (data_.front().x < s) {
+        data_.pop_front();
       } else {
         break;
       }
     }
   }
+
+  void clear()
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    data_.clear();
+  }
 };
+
+PlotDataContainer::PlotDataContainer(const PlotDataBuffer* parent)
+: parent_(parent), lock_(parent_->mutex_)
+{
+
+}
+
+size_t PlotDataContainer::size() const
+{
+  return parent_->data_.size();
+}
+
+CircularBuffer::const_iterator PlotDataContainer::begin() const
+{
+  return parent_->data_.begin();
+}
+
+CircularBuffer::const_iterator PlotDataContainer::end() const
+{
+  return parent_->data_.end();
+}
 
 class PlotSubscription
 {
@@ -62,14 +135,14 @@ private:
   // protect access to list of buffers
   mutable std::mutex buffers_mutex_;
 
+public:
   // One data buffer per plotted member of a message.
   //
   // Using list instead of vector, since the emplace_back operation does not require
   // the element to be MoveConstructible for resizing the array. The data buffer should
   // not be move constructed.
-  std::list<PlotDataBuffer> buffers;
+  std::list<std::pair<MessageMember, PlotDataBuffer>> buffers_;
 
-public:
   explicit PlotSubscription(
     std::string topic_name,
     rclcpp::node_interfaces::NodeTopicsInterface::SharedPtr topics_interface,
@@ -96,16 +169,16 @@ public:
   // disable copy and move
   PlotSubscription & operator=(PlotSubscription && other) = delete;
 
-  void add_field(MessageMember member, size_t capacity)
+  void add_field(MessageMember in_member, size_t capacity)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
-    for (auto & buffer : buffers) {
-      if (buffer.member.path == member.path) {
+    for (auto & [member, buffer] : buffers_) {
+      if (member.path == in_member.path) {
         std::invalid_argument("member already in subscription");
       }
     }
-    buffers.emplace_back(
-      member,
+    buffers_.emplace_back(
+      in_member,
       capacity
     );
   }
@@ -113,8 +186,8 @@ public:
   PlotDataBuffer & get_buffer(std::vector<std::string> member_path)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
-    for (auto & buffer : buffers) {
-      if (buffer.member.path == member_path) {
+    for (auto & [member, buffer] : buffers_) {
+      if (member.path == member_path) {
         return buffer;
       }
     }
@@ -142,25 +215,20 @@ public:
     } else {
       t = node_clock_interface_->get_clock()->now();
     }
-    std::unique_lock<std::mutex> lock(buffers_mutex_);
-    for (auto & buffer : buffers) {
-      std::unique_lock<std::mutex> lock(buffer.data_mutex);
-      if (buffer.data.full()) {
-        buffer.data.set_capacity(buffer.data.capacity() * 2);
+    {
+      std::unique_lock<std::mutex> lock(buffers_mutex_);
+      for (auto & [member, buffer] : buffers_) {
+        double value = deserializer_->get_numeric(message_buffer_.data(), member.info);
+        buffer.push(t.seconds(), value);
       }
-      buffer.data.push_back(
-        ImPlotPoint(
-          t.seconds(),
-          deserializer_->get_numeric(message_buffer_.data(), buffer.member.info)));
     }
   }
 
   void clear_all_data()
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
-    for (auto & buffer : buffers) {
-      std::unique_lock<std::mutex> lock(buffer.data_mutex);
-      buffer.data.clear();
+    for (auto & [_, buffer] : buffers_) {
+      buffer.clear();
     }
   }
 };

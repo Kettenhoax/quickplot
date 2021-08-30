@@ -4,6 +4,7 @@
 #include <memory>
 #include <deque>
 #include <list>
+#include <unordered_set>
 #include <unordered_map>
 #include <filesystem>
 #include <rosidl_typesupport_cpp/identifier.hpp>
@@ -37,6 +38,8 @@ private:
   // queue of requested topic data, for which the topic metadata has not been received yet
   std::mutex data_source_queue_mutex_;
   std::deque<DataSourceConfig> uninitialized_data_source_queue_;
+
+  std::unordered_set<std::string> topics_with_time_reference_issues_;
 
 public:
   explicit Application(fs::path config_file, std::shared_ptr<QuickPlotNode> _node)
@@ -238,15 +241,60 @@ public:
     auto t = node_->now();
     auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
 
+    auto plot_opts = PlotViewOptions {
+      .use_sim_time = node_->get_parameter("use_sim_time").as_bool(),
+      .t_start = t - history_dur,
+      .t_end = t,
+      .topics_with_time_reference_issues = {},
+    };
+    auto start_sec = plot_opts.t_start.seconds();
+    auto end_sec = plot_opts.t_end.seconds();
+
+    for (auto & [topic, subscription] : node_->topics_to_subscriptions) {
+      for (auto & [_, buffer] : subscription.buffers_) {
+
+        //
+        // Check received data for two cases of time reference issues.
+        //
+        // 1) The plotting tool runs with real time reference, but data is published in
+        //    simulation time. In this case the buffer would almost certainly be cleared,
+        //    completely, because the start timestamp will be further in the future than the
+        //    last data timestamp.
+        bool time_reference_issue_likely = false;
+        bool time_reference_issue_disproven = false;
+        bool had_data = !buffer.empty();
+        buffer.clear_data_up_to(plot_opts.t_start);
+        if (had_data) {
+          if (buffer.empty()) {
+            time_reference_issue_likely = buffer.empty();
+          } else {
+            time_reference_issue_disproven = true;
+          }
+        }
+
+        // 2) The plotting tool runs in simulation time, but data is published with real-time
+        //    stamps.
+        if (!time_reference_issue_likely) {
+          auto data = buffer.data();
+          time_reference_issue_likely = std::all_of(
+            data.begin(), data.end(),
+            [start_sec, end_sec](const ImPlotPoint & item) {
+              return item.x < start_sec || item.x > end_sec;
+            });
+        }
+        if (time_reference_issue_likely) {
+          topics_with_time_reference_issues_.insert(topic);
+        } else if (time_reference_issue_disproven) {
+          topics_with_time_reference_issues_.erase(topic);
+        }
+      }
+    }
+    plot_opts.topics_with_time_reference_issues = topics_with_time_reference_issues_;
+
     for (size_t i = 0; i < config_.plots.size(); i++) {
       auto id = "plot" + std::to_string(i);
       auto & plot_config = config_.plots[i];
       if (ImGui::Begin(id.c_str())) {
-        auto plot_opts = PlotViewOptions {
-          .use_sim_time = node_->get_parameter("use_sim_time").as_bool(),
-          .t_start = t - history_dur,
-          .t_end = t
-        };
         if (PlotView(id.c_str(), node_, plot_config, plot_opts)) {
           if (ImPlot::BeginDragDropTarget()) {
             if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {

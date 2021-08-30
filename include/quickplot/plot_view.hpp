@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 #include <memory>
+#include <unordered_set>
 #include <rclcpp/time.hpp>
 #include "quickplot/config.hpp"
 #include "quickplot/view_common.hpp"
@@ -16,12 +17,13 @@ struct PlotViewOptions
   bool use_sim_time;
   rclcpp::Time t_start;
   rclcpp::Time t_end;
+  std::unordered_set<std::string> topics_with_time_reference_issues;
 };
 
 ImPlotPoint circular_buffer_access(void * data, int idx)
 {
-  auto buffer = reinterpret_cast<PlotDataCircularBuffer *>(data);
-  return buffer->at(idx);
+  auto buffer = reinterpret_cast<CircularBuffer::const_iterator *>(data);
+  return buffer->operator[](idx);
 }
 
 bool PlotView(
@@ -68,6 +70,9 @@ bool PlotView(
   if (options.use_sim_time) {
     x_label << " use_sim_time:=true";
   }
+
+  std::unordered_set<std::string> time_warned_topics;
+
   if (ImPlot::BeginPlot(
       id, x_label.str().c_str(), nullptr, ImVec2(-1, -1),
       (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
@@ -84,7 +89,8 @@ bool PlotView(
         bool removed = false;
         if (source_it->axis == a) {
           std::stringstream ss;
-          auto resolved_topic = node->get_node_topics_interface()->resolve_topic_name(source_it->topic_name);
+          auto resolved_topic = node->get_node_topics_interface()->resolve_topic_name(
+            source_it->topic_name);
           ss << resolved_topic << " " << boost::algorithm::join(
             source_it->member_path, ".");
 
@@ -101,32 +107,30 @@ bool PlotView(
             ImPlot::PlotLine(series_label.c_str(), static_cast<float *>(nullptr), 0);
           } else {
             auto & buffer = it->second.get_buffer(source_it->member_path);
-            buffer.clear_data_up_to(options.t_start);
+            auto data = buffer.data();
+            auto it = data.begin();
             series_label = ss.str();
+            size_t item_count = data.size();
+            ImPlot::PlotLineG(
+              series_label.c_str(),
+              &circular_buffer_access,
+              &it,
+              item_count);
+            if (options.topics_with_time_reference_issues.find(resolved_topic) !=
+              options.topics_with_time_reference_issues.end() &&
+              time_warned_topics.find(resolved_topic) == time_warned_topics.end())
             {
-              std::unique_lock<std::mutex> lock(buffer.data_mutex);
-              ImPlot::PlotLineG(
-                series_label.c_str(),
-                &circular_buffer_access,
-                &buffer.data,
-                buffer.data.size());
-              if (!buffer.data.empty()) {
-                if (std::all_of(
-                    buffer.data.begin(), buffer.data.end(),
-                    [start_sec, end_sec](const ImPlotPoint & item) {
-                      return item.x < start_sec || item.x > end_sec;
-                    }))
-                {
-                  // all points are outside of the time bounds
-                  // the most likely cause is a sim time misconfiguration
-                  auto warning_color = ImPlot::GetLastItemColor();
-                  ImPlot::AnnotateClamped(
-                    (end_sec - start_sec) / 2.0, 0.5, ImVec2(
-                      0,
-                      0), warning_color, "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
-                    source_it->topic_name.c_str());
-                }
-              }
+              // Show warning about a probably time reference issue, since no data is visible.
+              // TODO(ZeilingerM) Should be placed in the corner of the plot, like a toast
+              //                  notification, but I haven't found an appropriate ImGui
+              //                  feature to accomplish this within an ImPlot region.
+              auto warning_color = ImPlot::GetLastItemColor();
+              ImPlot::AnnotateClamped(
+                (end_sec - start_sec) / 2.0, 0.5, ImVec2(
+                  0,
+                  0), warning_color, "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
+                source_it->topic_name.c_str());
+              time_warned_topics.insert(resolved_topic);
             }
           }
 
