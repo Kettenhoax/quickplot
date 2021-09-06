@@ -13,6 +13,20 @@
 namespace quickplot
 {
 
+struct introspection_error : public std::exception
+{
+  std::string message_;
+
+  explicit introspection_error(std::string message) : message_(message) {
+
+  }
+
+  const char * what() const throw ()
+  {
+    return message_.c_str();
+  }
+};
+
 struct MessageMemberInfo
 {
   // offset into memory of the entire message to obtain member

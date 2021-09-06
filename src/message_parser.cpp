@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <exception>
 #include <std_msgs/msg/header.hpp>
 #include <rosidl_typesupport_cpp/identifier.hpp>
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
@@ -114,15 +115,27 @@ std::optional<MessageMemberInfo> _find_member(
   return {};
 }
 
-MessageIntrospection::MessageIntrospection(std::string message_type) : message_type_(message_type)
+MessageIntrospection::MessageIntrospection(std::string message_type)
+: message_type_(message_type)
 {
-  introspection_support_library_ = rclcpp::get_typesupport_library(
-    message_type,
-    rosidl_typesupport_introspection_cpp::typesupport_identifier);
+  try {
+    introspection_support_library_ = rclcpp::get_typesupport_library(
+      message_type,
+      rosidl_typesupport_introspection_cpp::typesupport_identifier);
+  } catch (...) {
+    // rclcpp throws if package cannot be found
+    std::throw_with_nested(introspection_error("failed to load typesupport"));
+  }
+  if (!introspection_support_library_) {
+    throw introspection_error("failed to load typesupport");
+  }
   introspection_support_handle_ = rclcpp::get_typesupport_handle(
     message_type,
     rosidl_typesupport_introspection_cpp::typesupport_identifier,
     *introspection_support_library_);
+  if (!introspection_support_handle_) {
+    throw introspection_error("failed to load typesupport introspection_support_handle");
+  }
 }
 
 std::string MessageIntrospection::message_type() const

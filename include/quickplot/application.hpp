@@ -35,6 +35,9 @@ private:
   std::unordered_map<std::string,
     std::shared_ptr<MessageIntrospection>> message_type_to_introspection_;
 
+  // set of message types for which no typesupport is installed
+  std::unordered_set<std::string> message_type_unavailable_;
+
   // queue of requested topic data, for which the topic metadata has not been received yet
   std::mutex data_source_queue_mutex_;
   std::deque<DataSourceConfig> uninitialized_data_source_queue_;
@@ -100,30 +103,52 @@ public:
     add_topics_from_queue();
   }
 
+  void load_introspection_or_insert_missing(std::string type)
+  {
+    if (message_type_to_introspection_.find(type) == message_type_to_introspection_.end()) {
+      if (message_type_unavailable_.find(type) == message_type_unavailable_.end()) {
+        try {
+          message_type_to_introspection_.emplace(
+            type,
+            std::make_shared<MessageIntrospection>(type));
+        } catch (const introspection_error &) {
+          // TODO(ZeilingerM) store specific error to display on GUI
+          message_type_unavailable_.insert(type);
+        }
+      }
+    }
+  }
+
   void add_topics_from_queue()
   {
     std::unique_lock<std::mutex> lock(data_source_queue_mutex_);
-    for (auto it = uninitialized_data_source_queue_.begin();
-      it != uninitialized_data_source_queue_.end(); )
+    for (auto queue_it = uninitialized_data_source_queue_.begin();
+      queue_it != uninitialized_data_source_queue_.end(); )
     {
       auto resolved_topic = node_->get_node_topics_interface()->resolve_topic_name(
-        it->topic_name);
+        queue_it->topic_name);
       auto type_it = available_topics_to_types_.find(resolved_topic);
       if (type_it != available_topics_to_types_.end()) {
-        auto introspection = message_type_to_introspection_.at(type_it->second);
-        MessageMember member;
-        auto member_info_opt = introspection->get_member_info(it->member_path);
-        if (member_info_opt.has_value()) {
-          member.path = it->member_path;
-          member.info = member_info_opt.value();
-          node_->add_topic_field(resolved_topic, introspection, member);
-        } else {
-          // TODO(ZeilingerM) show error and warning on GUI
-          throw std::invalid_argument("Could not find member in message type");
+        // if type is known, initialize and remove from queue
+        const auto & itsp_it = message_type_to_introspection_.find(type_it->second);
+        if (itsp_it != message_type_to_introspection_.end()) {
+          MessageMember member;
+          auto member_info_opt = itsp_it->second->get_member_info(queue_it->member_path);
+          if (member_info_opt.has_value()) {
+            member.path = queue_it->member_path;
+            member.info = member_info_opt.value();
+            node_->add_topic_field(resolved_topic, itsp_it->second, member);
+          } else {
+            // TODO(ZeilingerM) show error and warning on GUI, don't crash
+            throw std::invalid_argument("could not find member in message type");
+          }
         }
-        it = uninitialized_data_source_queue_.erase(it);
+        queue_it = uninitialized_data_source_queue_.erase(queue_it);
       } else {
-        ++it;
+        // if type is not known yet, wait for next graph event
+        // TODO(ZeilingerM) add timeout to wait for topics and types specific in configuration
+        //                  display error on GUI after timeout
+        ++queue_it;
       }
     }
   }
@@ -138,37 +163,60 @@ public:
 
   bool TopicEntry(const std::string & topic, const std::string & type)
   {
+    // for any topic type, there must be either
+    // * a type introspection library loaded
+    // * the type confirmed to be unavailable
+    bool type_available = message_type_unavailable_.find(type) == message_type_unavailable_.end();
+    if (!type_available) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    }
+
+    // the type-to-introspection map is assumed to contain the type key, since unavailable key is
+    // handled at this point
     if (ImGui::TreeNode(topic.c_str())) {
-      if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-        ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
-        ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
-        ImGui::SameLine();
-        ImGui::Text("Dragging %s", topic.c_str());
-        ImGui::EndDragDropSource();
-      }
-      auto introspection = message_type_to_introspection_.at(type);
-      size_t i {0};
-      for (auto it = introspection->begin_member_infos();
-        it != introspection->end_member_infos(); ++it, ++i)
-      {
-        std::string member_formatted = boost::algorithm::join(it->path, ".");
-        ImGui::Selectable(member_formatted.c_str(), false);
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        }
-        MemberPayload payload {
-          .topic_name = topic.c_str(),
-          .member_index = i,
-        };
-        if (ImGui::IsItemActivated()) {
-          activate_topic_field(payload);
-        }
+      if (type_available) {
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-          ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
+          ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
+          ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
+          ImGui::SameLine();
+          ImGui::Text("Dragging %s", topic.c_str());
           ImGui::EndDragDropSource();
         }
+        auto introspection = message_type_to_introspection_.at(type);
+        size_t i {0};
+        for (auto it = introspection->begin_member_infos();
+          it != introspection->end_member_infos(); ++it, ++i)
+        {
+          std::string member_formatted = boost::algorithm::join(it->path, ".");
+          ImGui::Selectable(member_formatted.c_str(), false);
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+          }
+          MemberPayload payload {
+            .topic_name = topic.c_str(),
+            .member_index = i,
+          };
+          if (ImGui::IsItemActivated()) {
+            activate_topic_field(payload);
+          }
+          if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+            ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
+            ImGui::EndDragDropSource();
+          }
+        }
+      } else { /* not type_available */
+        ImGui::PopStyleColor();
+
+        // color was eye-droppert' from Rviz
+        static ImVec4 WARNING_COLOR = static_cast<ImVec4>(ImColor::HSV(0.1083f, 0.968f, 0.867f));
+        ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
+        ImGui::Text("ERROR: message type '%s' is not available", type.c_str());
+        ImGui::PopStyleColor();
       }
       return true;
+    }
+    if (!type_available) {
+      ImGui::PopStyleColor();
     }
     return false;
   }
@@ -184,7 +232,7 @@ public:
       auto topics_and_types = node_->get_topic_names_and_types();
       for (const auto & [topic, types] : topics_and_types) {
         if (types.size() != 1) {
-          std::cerr << "Topic " << topic << " has multiple types, quickplot will ignore it" <<
+          std::cerr << "topic " << topic << " has multiple types, quickplot will ignore it" <<
             std::endl;
           continue;
         }
@@ -194,14 +242,10 @@ public:
           // the topic was already in the map, so we possibly have active listeners
           // parsing a message type that may have changed
           if (entry->second != new_type) {
-            std::invalid_argument("Type of topic " + topic + " changed");
+            std::invalid_argument("type of topic " + topic + " changed");
           }
         }
-        if (message_type_to_introspection_.find(new_type) == message_type_to_introspection_.end()) {
-          message_type_to_introspection_.emplace(
-            new_type,
-            std::make_shared<MessageIntrospection>(new_type));
-        }
+        load_introspection_or_insert_missing(new_type);
       }
       add_topics_from_queue();
     }
@@ -215,7 +259,6 @@ public:
             "topics can only become active when their type is known");
           auto type = available_topics_to_types_[topic];
           if (TopicEntry(topic, type)) {
-
             auto stats = subscription.receive_period_stats();
             if (stats.standard_deviation < (stats.average / 10.0) && stats.average < 1.0 &&
               stats.average > 0.001)

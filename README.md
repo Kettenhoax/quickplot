@@ -8,10 +8,13 @@ Bugs and bug sources
 * [ ] handle errors in configuration file and display on GUI
 * [ ] show error states on topic communication
 * [ ] warning about NaN values
-* [ ] avoid some plot colors
+* [ ] avoid plot colors of insufficient contrast
+* [ ] don't crash when member is missing
+* [ ] don't display sim time warnings if there is no data
 
 features
 
+* [ ] diagnostics per topic, with warning symbol
 * [ ] sorting topics
 * [ ] filter topics/types/members in list
 * [ ] pausing function
@@ -20,8 +23,13 @@ features
 * [ ] range suggestions based on unit (angles -pi to pi)
 * [ ] tooltip: click to add to plot i
 * [ ] suggest auto-fit if all y values are off-plot
+* [ ] pass flag to not start with default config
+* [ ] if the config path in the argument does not exist, create new one
+* [ ] show array elements, default to first item, aggregate array elements
 
-## Tests
+* [ ] topic tree node disable arrows if there are no elements
+
+## tests
 
 To test GUI features, use the provided scripts in the `test` directory
 
