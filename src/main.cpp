@@ -98,7 +98,6 @@ int main(int argc, char ** argv)
     auto dock_id = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
     ImGui::SetNextWindowDockID(dock_id);
     app.update();
-    ImGui::ShowDemoWindow();
     ImGui::Render();
     int display_w, display_h;
     glfwGetFramebufferSize(window, &display_w, &display_h);

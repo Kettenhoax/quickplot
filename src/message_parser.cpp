@@ -115,6 +115,24 @@ std::optional<MessageMemberInfo> _find_member(
   return {};
 }
 
+MessageMemberContainer::MessageMemberContainer(
+  const rosidl_message_type_support_t * introspection_support)
+: introspection_support_(introspection_support)
+{
+
+}
+
+MemberIterator MessageMemberContainer::begin() const
+{
+  return MemberIterator(introspection_support_);
+}
+
+MemberIterator MessageMemberContainer::end() const
+{
+
+  return MemberIterator(nullptr);
+}
+
 MessageIntrospection::MessageIntrospection(std::string message_type)
 : message_type_(message_type)
 {
@@ -143,7 +161,8 @@ std::string MessageIntrospection::message_type() const
   return message_type_;
 }
 
-const rosidl_typesupport_introspection_cpp::MessageMembers * MessageIntrospection::members() const
+const rosidl_typesupport_introspection_cpp::MessageMembers * MessageIntrospection::members_raw()
+const
 {
   return static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(
     introspection_support_handle_->data);
@@ -151,7 +170,7 @@ const rosidl_typesupport_introspection_cpp::MessageMembers * MessageIntrospectio
 
 std::optional<size_t> MessageIntrospection::get_header_offset() const
 {
-  auto m = members();
+  auto m = members_raw();
   for (size_t i = 0; i < m->member_count_; i++) {
     // search only on first level of the member tree
     const auto & member = m->members_[i];
@@ -171,14 +190,9 @@ std::optional<size_t> MessageIntrospection::get_header_offset() const
   return {};
 }
 
-MemberIterator MessageIntrospection::begin_member_infos() const
+MessageMemberContainer MessageIntrospection::members() const
 {
-  return MemberIterator(introspection_support_handle_);
-}
-
-MemberIterator MessageIntrospection::end_member_infos() const
-{
-  return MemberIterator(nullptr);
+  return MessageMemberContainer(introspection_support_handle_);
 }
 
 std::optional<MessageMemberInfo> MessageIntrospection::get_member_info(
@@ -222,7 +236,7 @@ std::string IntrospectionMessageDeserializer::message_type() const
 std::vector<uint8_t> IntrospectionMessageDeserializer::init_buffer() const
 {
   std::vector<uint8_t> buffer;
-  auto members = introspection_->members();
+  auto members = introspection_->members_raw();
   buffer.resize(members->size_of_);
   members->init_function(
     buffer.data(),
@@ -232,7 +246,7 @@ std::vector<uint8_t> IntrospectionMessageDeserializer::init_buffer() const
 
 void IntrospectionMessageDeserializer::fini_buffer(std::vector<uint8_t> & buffer) const
 {
-  introspection_->members()->fini_function(buffer.data());
+  introspection_->members_raw()->fini_function(buffer.data());
 }
 
 void IntrospectionMessageDeserializer::deserialize(

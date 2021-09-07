@@ -17,7 +17,9 @@ struct introspection_error : public std::exception
 {
   std::string message_;
 
-  explicit introspection_error(std::string message) : message_(message) {
+  explicit introspection_error(std::string message)
+  : message_(message)
+  {
 
   }
 
@@ -211,6 +213,19 @@ private:
   MessageMember current_member_;
 };
 
+class MessageMemberContainer
+{
+private:
+  const rosidl_message_type_support_t * introspection_support_;
+
+public:
+  explicit MessageMemberContainer(const rosidl_message_type_support_t *);
+
+  MemberIterator begin() const;
+
+  MemberIterator end() const;
+};
+
 class MessageIntrospection
 {
 
@@ -227,13 +242,11 @@ public:
 
   std::string message_type() const;
 
-  const rosidl_typesupport_introspection_cpp::MessageMembers * members() const;
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members_raw() const;
+
+  MessageMemberContainer members() const;
 
   std::optional<size_t> get_header_offset() const;
-
-  MemberIterator begin_member_infos() const;
-
-  MemberIterator end_member_infos() const;
 
   std::optional<MessageMemberInfo> get_member_info(std::vector<std::string> member_path) const;
 };

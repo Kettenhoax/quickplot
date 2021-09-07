@@ -15,11 +15,8 @@ TEST(test_parser, twist_get_member_infos_lists_numeric_members)
 {
   auto topic_type = "geometry_msgs/Twist";
   auto introspection = std::make_shared<quickplot::MessageIntrospection>(topic_type);
-
-  std::vector<quickplot::MessageMember> members;
-  std::move(
-    introspection->begin_member_infos(),
-    introspection->end_member_infos(), std::back_inserter(members));
+  auto c_members = introspection->members();
+  std::vector<quickplot::MessageMember> members(c_members.begin(), c_members.end());
 
   EXPECT_EQ(members.size(), 6lu);
   EXPECT_EQ(members[0].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT64);
@@ -41,11 +38,9 @@ TEST(test_parser, twist_stamped_get_member_infos_lists_single_stamp)
 {
   auto topic_type = "geometry_msgs/TwistStamped";
   auto introspection = std::make_shared<quickplot::MessageIntrospection>(topic_type);
+  auto c_members = introspection->members();
+  std::vector<quickplot::MessageMember> members(c_members.begin(), c_members.end());
 
-  std::vector<quickplot::MessageMember> members;
-  std::move(
-    introspection->begin_member_infos(),
-    introspection->end_member_infos(), std::back_inserter(members));
   EXPECT_EQ(members.size(), 7lu);
   EXPECT_EQ(members[0].info.type_id, rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE);
   ASSERT_THAT(members[0].path, ::testing::ElementsAre("header", "stamp"));

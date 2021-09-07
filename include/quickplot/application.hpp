@@ -190,10 +190,8 @@ public:
         }
         auto introspection = message_type_to_introspection_.at(type);
         size_t i {0};
-        for (auto it = introspection->begin_member_infos();
-          it != introspection->end_member_infos(); ++it, ++i)
-        {
-          std::string member_formatted = boost::algorithm::join(it->path, ".");
+        for (const auto & member : introspection->members()) {
+          std::string member_formatted = boost::algorithm::join(member.path, ".");
           ImGui::Selectable(member_formatted.c_str(), false);
           if (ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -216,6 +214,7 @@ public:
             ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
             ImGui::EndDragDropSource();
           }
+          ++i;
         }
       } else { /* not type_available */
         ImGui::PopStyleColor();
@@ -409,7 +408,7 @@ public:
   {
     auto message_type = available_topics_to_types_.at(payload->topic_name);
     auto introspection = message_type_to_introspection_.at(message_type);
-    auto member_infos = introspection->begin_member_infos();
+    auto member_infos = introspection->members().begin();
     std::advance(member_infos, payload->member_index);
     node_->add_topic_field(payload->topic_name, introspection, *member_infos);
     plot_config.sources.insert(
