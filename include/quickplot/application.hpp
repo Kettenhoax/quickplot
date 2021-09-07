@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <filesystem>
+#include <imgui_internal.h>
 #include <rosidl_typesupport_cpp/identifier.hpp>
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
 #include "quickplot/config.hpp"
@@ -18,6 +19,8 @@ namespace fs = std::filesystem;
 
 namespace quickplot
 {
+
+constexpr float HOVER_TOOLTIP_DEBOUNCE = 0.4;
 
 class Application
 {
@@ -191,6 +194,10 @@ public:
           ImGui::Selectable(member_formatted.c_str(), false);
           if (ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+            if (GImGui->HoveredIdTimer > 0.5) {
+              ImGui::SetTooltip("add %s to plot 0", member_formatted.c_str());
+            }
           }
           MemberPayload payload {
             .topic_name = topic.c_str(),
@@ -207,7 +214,7 @@ public:
       } else { /* not type_available */
         ImGui::PopStyleColor();
 
-        // color was eye-droppert' from Rviz
+        // color was eye-droppert' from Rviz display warnings
         static ImVec4 WARNING_COLOR = static_cast<ImVec4>(ImColor::HSV(0.1083f, 0.968f, 0.867f));
         ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
         ImGui::Text("ERROR: message type '%s' is not available", type.c_str());

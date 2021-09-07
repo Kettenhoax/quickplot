@@ -21,7 +21,6 @@ features
 * [ ] plot length of geometry_msgs/msg/Vector3
 * [ ] unit suggestions based on convention
 * [ ] range suggestions based on unit (angles -pi to pi)
-* [ ] tooltip: click to add to plot i
 * [ ] suggest auto-fit if all y values are off-plot
 * [ ] pass flag to not start with default config
 * [ ] if the config path in the argument does not exist, create new one
