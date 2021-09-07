@@ -20,6 +20,8 @@ namespace fs = std::filesystem;
 namespace quickplot
 {
 
+constexpr const char* TOPIC_LIST_WINDOW_ID = "TopicList";
+
 constexpr float HOVER_TOOLTIP_DEBOUNCE = 0.4;
 
 class Application
@@ -263,7 +265,8 @@ public:
       add_topics_from_queue();
     }
 
-    if (ImGui::Begin("topic list")) {
+    ImGuiWindowFlags list_window_flags = ImGuiWindowFlags_None;
+    if (ImGui::Begin(TOPIC_LIST_WINDOW_ID, nullptr, list_window_flags)) {
       if (!node_->topics_to_subscriptions.empty()) {
         if (ImGui::CollapsingHeader("active topics", ImGuiTreeNodeFlags_DefaultOpen)) {
           for (const auto & [topic, subscription] : node_->topics_to_subscriptions) {

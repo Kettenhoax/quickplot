@@ -77,7 +77,7 @@ int main(int argc, char ** argv)
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init(glsl_version);
 
-  ImGuiStyle& style = ImGui::GetStyle();
+  ImGuiStyle & style = ImGui::GetStyle();
   // for plot windows, the padding is redundant with borders
   style.WindowPadding.x = 0.0;
   style.WindowPadding.y = 0.0;
@@ -95,9 +95,52 @@ int main(int argc, char ** argv)
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    auto dock_id = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
-    ImGui::SetNextWindowDockID(dock_id);
+    static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
+    // build parent window with dock spaces
+    ImGuiWindowFlags parent_window_flags = ImGuiWindowFlags_None;
+    parent_window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+    parent_window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+    if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode) {
+      parent_window_flags |= ImGuiWindowFlags_NoBackground;
+    }
+
+    ImGuiViewport * viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->Pos);
+    ImGui::SetNextWindowSize(viewport->Size);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::Begin("ParentDock", nullptr, parent_window_flags);
+
+    ImGuiID dockspace_id = ImGui::GetID("ParentDockSpace");
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+
+    static auto first_time = true;
+    if (first_time) {
+      first_time = false;
+      ImGui::DockBuilderRemoveNode(dockspace_id); // clear any previous layout
+      ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
+      ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
+
+      float default_list_width = (1 - (1.0 / 1.61803398875)) / 2.0;
+      ImGuiID dock_id_plot;
+      ImGuiID dock_id_list = ImGui::DockBuilderSplitNode(
+        dockspace_id, ImGuiDir_Left,
+        default_list_width, nullptr, &dock_id_plot);
+      // disable docking and bar in list window
+      ImGui::DockBuilderGetNode(dock_id_list)->SetLocalFlags(
+        ImGuiDockNodeFlags_NoDocking | ImGuiDockNodeFlags_NoTabBar);
+
+      // we now dock our windows into the docking node we made above
+      ImGui::DockBuilderDockWindow(quickplot::TOPIC_LIST_WINDOW_ID, dock_id_list);
+      ImGui::DockBuilderDockWindow("plot0", dock_id_plot);
+      ImGui::DockBuilderFinish(dockspace_id);
+    }
+
+    ImGui::End();
+
+    // update quickplot
     app.update();
+
     ImGui::Render();
     int display_w, display_h;
     glfwGetFramebufferSize(window, &display_w, &display_h);
