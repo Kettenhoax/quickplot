@@ -20,7 +20,7 @@ namespace fs = std::filesystem;
 namespace quickplot
 {
 
-constexpr const char* TOPIC_LIST_WINDOW_ID = "TopicList";
+constexpr const char * TOPIC_LIST_WINDOW_ID = "TopicList";
 
 constexpr float HOVER_TOOLTIP_DEBOUNCE = 0.4;
 
@@ -352,10 +352,12 @@ public:
     }
     plot_opts.topics_with_time_reference_issues = topics_with_time_reference_issues_;
 
-    for (size_t i = 0; i < config_.plots.size(); i++) {
+    auto plot_it = config_.plots.begin();
+    for (size_t i = 0; plot_it != config_.plots.end(); i++) {
       auto id = "plot" + std::to_string(i);
-      auto & plot_config = config_.plots[i];
-      if (ImGui::Begin(id.c_str())) {
+      auto & plot_config = *plot_it;
+      bool plot_window = true;
+      if (ImGui::Begin(id.c_str(), &plot_window)) {
         if (PlotView(id.c_str(), node_, plot_config, plot_opts)) {
           if (ImPlot::BeginDragDropTarget()) {
             if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
@@ -392,6 +394,11 @@ public:
             }
           }
           EndPlotView();
+        }
+        if (!plot_window) {
+          plot_it = config_.plots.erase(plot_it);
+        } else {
+          ++plot_it;
         }
       }
       ImGui::End();
