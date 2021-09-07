@@ -65,7 +65,7 @@ int main(int argc, char ** argv)
   auto imgui_ini_path = quickplot::get_default_config_directory().append("imgui.ini").string();
   io.IniFilename = imgui_ini_path.c_str();
 
-  ImGui::StyleColorsDark();
+  ImGui::StyleColorsLight();
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init(glsl_version);
 

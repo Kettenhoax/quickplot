@@ -166,17 +166,20 @@ public:
 
   bool TopicEntry(const std::string & topic, const std::string & type)
   {
+    ImGuiTreeNodeFlags tree_node_flags = ImGuiTreeNodeFlags_None;
+
     // for any topic type, there must be either
     // * a type introspection library loaded
     // * the type confirmed to be unavailable
     bool type_available = message_type_unavailable_.find(type) == message_type_unavailable_.end();
     if (!type_available) {
       ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+      tree_node_flags |= ImGuiTreeNodeFlags_Leaf;
     }
 
     // the type-to-introspection map is assumed to contain the type key, since unavailable key is
     // handled at this point
-    if (ImGui::TreeNode(topic.c_str())) {
+    if (ImGui::TreeNodeEx(topic.c_str(), tree_node_flags)) {
       if (type_available) {
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
           ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
@@ -215,9 +218,10 @@ public:
         ImGui::PopStyleColor();
 
         // color was eye-droppert' from Rviz display warnings
+        // TODO(ZeilingerM) single hardcoded color is of course not robust against theme changes
         static ImVec4 WARNING_COLOR = static_cast<ImVec4>(ImColor::HSV(0.1083f, 0.968f, 0.867f));
         ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
-        ImGui::Text("ERROR: message type '%s' is not available", type.c_str());
+        ImGui::TextWrapped("message type '%s' is not available", type.c_str());
         ImGui::PopStyleColor();
       }
       return true;

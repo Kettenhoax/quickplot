@@ -3,14 +3,15 @@ Realtime plotting tool for ROS2.
 Bugs and bug sources
 
 * [ ] initial window dockspaces visible
-* [ ] closable plot windows, but not topic view
-* [ ] click on topic triggers activate, but should allow dragdrop
+* [ ] closable plot windows (but not topic view)
+* [ ] click on member entry immediately adds to plot, but should allow dragdrop
 * [ ] handle errors in configuration file and display on GUI
 * [ ] show error states on topic communication
 * [ ] warning about NaN values
 * [ ] avoid plot colors of insufficient contrast
 * [ ] don't crash when member is missing
 * [ ] don't display sim time warnings if there is no data
+* [ ] don't reassign line colors when switching from unavailable to available
 
 features
 
@@ -25,8 +26,6 @@ features
 * [ ] pass flag to not start with default config
 * [ ] if the config path in the argument does not exist, create new one
 * [ ] show array elements, default to first item, aggregate array elements
-
-* [ ] topic tree node disable arrows if there are no elements
 
 ## tests
 
