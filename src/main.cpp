@@ -62,6 +62,14 @@ int main(int argc, char ** argv)
   io.ConfigFlags &= ~(ImGuiConfigFlags_ViewportsEnable);
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
+  double font_du_point_size = 12.0; // TODO(ZeilingerM) get from os config
+  double screen_dpi = 96.0; // TODO(ZeilingerM) get from monitor
+  double point_pixel_size = screen_dpi / 72;
+  double du_pixel_size = font_du_point_size * point_pixel_size;
+
+  // Ubuntu standard font, TODO(ZeilingerM) fallback to default font
+  io.Fonts->AddFontFromFileTTF("/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf", du_pixel_size);
+
   auto imgui_ini_path = quickplot::get_default_config_directory().append("imgui.ini").string();
   io.IniFilename = imgui_ini_path.c_str();
 
@@ -69,7 +77,11 @@ int main(int argc, char ** argv)
   ImGui_ImplGlfw_InitForOpenGL(window, true);
   ImGui_ImplOpenGL3_Init(glsl_version);
 
-  ImVec4 clear_color = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+  ImGuiStyle& style = ImGui::GetStyle();
+  // for plot windows, the padding is redundant with borders
+  style.WindowPadding.x = 0.0;
+  style.WindowPadding.y = 0.0;
+  ImVec4 clear_color = style.Colors[ImGuiCol_WindowBg];
 
   while (rclcpp::ok()) {
     if (glfwWindowShouldClose(window)) {
@@ -86,6 +98,7 @@ int main(int argc, char ** argv)
     auto dock_id = ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
     ImGui::SetNextWindowDockID(dock_id);
     app.update();
+    ImGui::ShowDemoWindow();
     ImGui::Render();
     int display_w, display_h;
     glfwGetFramebufferSize(window, &display_w, &display_h);
