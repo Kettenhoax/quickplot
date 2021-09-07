@@ -199,7 +199,10 @@ public:
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
             if (GImGui->HoveredIdTimer > 0.5) {
-              ImGui::SetTooltip("add %s to plot 0", member_formatted.c_str());
+              ImGui::BeginTooltip();
+              ImGui::Text("add %s to plot 0", member_formatted.c_str());
+              ImGui::Text("or drag and drop on plot of choice");
+              ImGui::EndTooltip();
             }
           }
           MemberPayload payload {
@@ -262,21 +265,23 @@ public:
     }
 
     if (ImGui::Begin("topic list")) {
-      if (ImGui::CollapsingHeader("active topics", ImGuiTreeNodeFlags_DefaultOpen)) {
-        for (const auto & [topic, subscription] : node_->topics_to_subscriptions) {
-          rcpputils::assert_true(
-            node_->topics_to_subscriptions.find(
-              topic) != node_->topics_to_subscriptions.end(),
-            "topics can only become active when their type is known");
-          auto type = available_topics_to_types_[topic];
-          if (TopicEntry(topic, type)) {
-            auto stats = subscription.receive_period_stats();
-            if (stats.standard_deviation < (stats.average / 10.0) && stats.average < 1.0 &&
-              stats.average > 0.001)
-            {
-              ImGui::Text("%.1f hz", 1.0 / stats.average);
+      if (!node_->topics_to_subscriptions.empty()) {
+        if (ImGui::CollapsingHeader("active topics", ImGuiTreeNodeFlags_DefaultOpen)) {
+          for (const auto & [topic, subscription] : node_->topics_to_subscriptions) {
+            rcpputils::assert_true(
+              available_topics_to_types_.find(
+                topic) != available_topics_to_types_.end(),
+              "topics can only become active when their type is known");
+            auto type = available_topics_to_types_[topic];
+            if (TopicEntry(topic, type)) {
+              auto stats = subscription.receive_period_stats();
+              if (stats.standard_deviation < (stats.average / 10.0) && stats.average < 1.0 &&
+                stats.average > 0.001)
+              {
+                ImGui::Text("%.1f hz", 1.0 / stats.average);
+              }
+              EndTopicEntry();
             }
-            EndTopicEntry();
           }
         }
       }
