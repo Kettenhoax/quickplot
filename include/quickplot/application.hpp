@@ -289,7 +289,15 @@ public:
         }
       }
       if (ImGui::CollapsingHeader("available topics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // according to https://design.ros2.org/articles/topic_and_service_names.html, max topic
+        // name length is 256
+        const size_t filter_text_length = 256 + 1;
+        static char filter_text[filter_text_length];
+        ImGui::InputTextWithHint("", "filter topic or type", filter_text, filter_text_length);
         for (const auto & [topic, type] : available_topics_to_types_) {
+          if (!strstr(topic.c_str(), filter_text)) {
+            continue;
+          }
           if (node_->topics_to_subscriptions.find(topic) == node_->topics_to_subscriptions.end()) {
             if (TopicEntry(topic, type)) {
               EndTopicEntry();
