@@ -2,7 +2,6 @@ Realtime plotting tool for ROS2.
 
 Bugs and bug sources
 
-* [ ] closable plot windows (but not topic view)
 * [ ] click on member entry immediately adds to plot, but should allow dragdrop
 * [ ] handle errors in configuration file and display on GUI
 * [ ] show error states on topic communication

@@ -78,9 +78,6 @@ int main(int argc, char ** argv)
   ImGui_ImplOpenGL3_Init(glsl_version);
 
   ImGuiStyle & style = ImGui::GetStyle();
-  // for plot windows, the padding is redundant with borders
-  style.WindowPadding.x = 0.0;
-  style.WindowPadding.y = 0.0;
   ImVec4 clear_color = style.Colors[ImGuiCol_WindowBg];
 
   while (rclcpp::ok()) {
@@ -109,7 +106,11 @@ int main(int argc, char ** argv)
     ImGui::SetNextWindowPos(viewport->Pos);
     ImGui::SetNextWindowSize(viewport->Size);
     ImGui::SetNextWindowViewport(viewport->ID);
+
+    // remove redundant padding from outer window
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0, 0.0));
     ImGui::Begin("ParentDock", nullptr, parent_window_flags);
+    ImGui::PopStyleVar();
 
     ImGuiID dockspace_id = ImGui::GetID("ParentDockSpace");
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);

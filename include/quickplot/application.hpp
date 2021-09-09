@@ -357,7 +357,11 @@ public:
       auto id = "plot" + std::to_string(i);
       auto & plot_config = *plot_it;
       bool plot_window = true;
+
+      // for plot windows, the padding is redundant with dock borders
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0, 0.0));
       if (ImGui::Begin(id.c_str(), &plot_window)) {
+        ImGui::PopStyleVar();
         if (PlotView(id.c_str(), node_, plot_config, plot_opts)) {
           if (ImPlot::BeginDragDropTarget()) {
             if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
