@@ -92,6 +92,9 @@ int main(int argc, char ** argv)
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
+    // TODO(ZeilingerM) should probably be user-configured
+    ImPlot::GetStyle().LineWeight = 2.0;
+
     static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
     // build parent window with dock spaces
     ImGuiWindowFlags parent_window_flags = ImGuiWindowFlags_None;

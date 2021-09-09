@@ -72,7 +72,6 @@ bool PlotView(
   }
 
   std::unordered_set<std::string> time_warned_topics;
-
   if (ImPlot::BeginPlot(
       id, x_label.str().c_str(), nullptr, ImVec2(-1, -1),
       (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |

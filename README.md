@@ -1,4 +1,36 @@
-Realtime plotting tool for ROS2.
+A realtime plotting tool for ROS2.
+
+# usage
+
+```bash
+ros2 run quickplot quickplot [config_file.yaml] [--ros-args -p use_sim_time:=true]
+```
+
+Plot config files are designed to be concise, with ROS topics as first-class citizens, so they can potentially be hand-written.
+
+```
+# example to plot speed and angular velocity on two axes
+plots:
+  - axes:
+      - y_min: -2
+        y_max: 2
+      - y_min: -0.5
+        y_max: 0.5
+    sources:
+      - topic_name: /cmd_vel
+        member_path:
+          - twist
+          - linear
+          - x
+      - topic_name: /cmd_vel
+        member_path:
+          - twist
+          - angular
+          - z
+        axis: 2
+```
+
+# roadmap
 
 Bugs and bug sources
 
