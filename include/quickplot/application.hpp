@@ -3,6 +3,7 @@
 #include <utility>
 #include <memory>
 #include <deque>
+#include <map>
 #include <list>
 #include <unordered_set>
 #include <unordered_map>
@@ -36,7 +37,7 @@ private:
 
   double edited_history_length_;
 
-  std::unordered_map<std::string, std::string> available_topics_to_types_;
+  std::map<std::string, std::string> available_topics_to_types_;
   std::unordered_map<std::string,
     std::shared_ptr<MessageIntrospection>> message_type_to_introspection_;
 

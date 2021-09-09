@@ -1,5 +1,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <unordered_map>
+#include <map>
 #include <string>
 #include <utility>
 #include <memory>
@@ -19,7 +20,7 @@ public:
   std::mutex topic_mutex;
   std::unordered_map<std::string,
     std::shared_ptr<IntrospectionMessageDeserializer>> type_to_parsers_;
-  std::unordered_map<std::string, PlotSubscription> topics_to_subscriptions;
+  std::map<std::string, PlotSubscription> topics_to_subscriptions;
 
   void add_topic_field(
     std::string topic,
