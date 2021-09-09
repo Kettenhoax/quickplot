@@ -14,7 +14,6 @@ Bugs and bug sources
 features
 
 * [ ] diagnostics per topic, with warning symbol
-* [ ] filter topics/types/members in list
 * [ ] pausing function
 * [ ] plot length of geometry_msgs/msg/Vector3
 * [ ] unit suggestions based on convention

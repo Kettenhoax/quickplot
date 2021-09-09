@@ -5,6 +5,7 @@
 #include <deque>
 #include <map>
 #include <list>
+#include <vector>
 #include <unordered_set>
 #include <unordered_map>
 #include <filesystem>
@@ -293,15 +294,32 @@ public:
         // name length is 256
         const size_t filter_text_length = 256 + 1;
         static char filter_text[filter_text_length];
+        ImGui::PushItemWidth(-1);
         ImGui::InputTextWithHint("", "filter topic or type", filter_text, filter_text_length);
+        ImGui::PopItemWidth();
+
+        std::vector<std::pair<std::string, std::string>> shown_available_topics;
+        size_t total_available = 0;
         for (const auto & [topic, type] : available_topics_to_types_) {
+          if (node_->topics_to_subscriptions.find(topic) != node_->topics_to_subscriptions.end()) {
+            continue;
+          }
+          ++total_available;
           if (!strstr(topic.c_str(), filter_text)) {
             continue;
           }
-          if (node_->topics_to_subscriptions.find(topic) == node_->topics_to_subscriptions.end()) {
-            if (TopicEntry(topic, type)) {
-              EndTopicEntry();
-            }
+          shown_available_topics.push_back({topic, type});
+        }
+
+        if (filter_text[0] != '\0') {
+          // if filter is passed, show amount of filtered topics
+          ImGui::PushItemWidth(-1);
+          ImGui::Text("Showing %lu of %lu topics", shown_available_topics.size(), total_available);
+          ImGui::PopItemWidth();
+        }
+        for (const auto & [topic, type] : shown_available_topics) {
+          if (TopicEntry(topic, type)) {
+            EndTopicEntry();
           }
         }
       }
