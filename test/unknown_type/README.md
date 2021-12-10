@@ -8,5 +8,5 @@ A simple way to test this is installing a message type, which is not installed o
 # vision_msgs was not required on the host system for me, but was released to galactic
 # you can test with any message type that contains a numeric field
 docker build --network host . -t quickplot_unknown_type
-docker run --network host quickplot_unknown_type ros2 topic pub /object vision_msgs/msg/ObjectHypothesis
+docker run --network host quickplot_unknown_type ros2 topic pub /can_msgs can_msgs/msg/Frame
 ```

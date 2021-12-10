@@ -27,10 +27,12 @@ class PlotDataContainer
 {
 private:
   const PlotDataBuffer* parent_;
-  std::unique_lock<std::mutex> lock_;
+  std::optional<std::unique_lock<std::mutex>> lock_;
 
 public:
   explicit PlotDataContainer(const PlotDataBuffer* parent);
+
+  PlotDataContainer();
 
   size_t size() const;
 
@@ -105,8 +107,15 @@ PlotDataContainer::PlotDataContainer(const PlotDataBuffer* parent)
 
 }
 
+PlotDataContainer::PlotDataContainer() : parent_(nullptr), lock_() {
+
+}
+
 size_t PlotDataContainer::size() const
 {
+  if (!parent_) {
+    return 0;
+  }
   return parent_->data_.size();
 }
 

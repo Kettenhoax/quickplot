@@ -1,23 +1,72 @@
 #include "implot.h" // NOLINT
-#include <boost/algorithm/string/join.hpp>
 #include <vector>
 #include <mutex>
 #include <string>
 #include <memory>
+#include <set>
 #include <unordered_set>
+#include <boost/algorithm/string/join.hpp>
 #include <rclcpp/time.hpp>
 #include "quickplot/config.hpp"
-#include "quickplot/view_common.hpp"
 
 namespace quickplot
 {
+
+enum class DataSourceState
+{
+  Ok = 0,
+  Uninitialized = 1,
+  // the message type behind the data source is not available on the system running the plot tool
+  MessageTypeUnavailable,
+  // the timestamps in the last received messages were out of range
+  TimeStampOutOfRange,
+  // the data source requests a member that is not part of the message type
+  InvalidMember,
+};
+
+struct DataSource
+{
+  DataSourceConfig config;
+  DataSourceState state;
+  // must be accessed only if state is Ok
+  std::string id;
+  // must be accessed only if state is Ok
+  std::string resolved_topic_name;
+
+  inline bool operator==(const DataSource & other) const
+  {
+    return config == other.config;
+  }
+};
+
+} // namespace quickplot
+
+namespace std
+{
+template<>
+struct hash<quickplot::DataSource>
+{
+  inline size_t operator()(const quickplot::DataSource & source) const
+  {
+    return hash<std::string>().operator()(source.config.topic_name);
+  }
+};
+} // namespace std
+
+namespace quickplot
+{
+
+struct Plot
+{
+  std::vector<DataSource> sources;
+  std::vector<AxisConfig> axes;
+};
 
 struct PlotViewOptions
 {
   bool use_sim_time;
   rclcpp::Time t_start;
   rclcpp::Time t_end;
-  std::unordered_set<std::string> topics_with_time_reference_issues;
 };
 
 ImPlotPoint circular_buffer_access(void * data, int idx)
@@ -26,9 +75,7 @@ ImPlotPoint circular_buffer_access(void * data, int idx)
   return buffer->operator[](idx);
 }
 
-bool PlotView(
-  const char * id, std::shared_ptr<QuickPlotNode> node, PlotConfig & plot,
-  PlotViewOptions options)
+bool PlotView(const char * id, Plot & plot, const PlotViewOptions & options)
 {
   for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
     const auto & axis_config = plot.axes[a];
@@ -79,85 +126,72 @@ bool PlotView(
   {
     if (ImPlot::IsPlotXAxisHovered()) {
       ImGui::BeginTooltip();
-
       ImGui::Text("now: %.2f", options.t_end.seconds());
       ImGui::EndTooltip();
-    }
-    for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-      for (auto source_it = plot.sources.begin(); source_it != plot.sources.end(); ) {
-        bool removed = false;
-        if (source_it->axis == a) {
-          std::stringstream ss;
-          auto resolved_topic = node->get_node_topics_interface()->resolve_topic_name(
-            source_it->topic_name);
-          ss << resolved_topic << " " << boost::algorithm::join(
-            source_it->member_path, ".");
-
-          ImPlot::SetPlotYAxis(a);
-
-          std::unique_lock<std::mutex> lock(node->topic_mutex);
-          auto it = node->topics_to_subscriptions.find(resolved_topic);
-          std::string series_label;
-          if (it == node->topics_to_subscriptions.end()) {
-            // plot empty line to show warning in legend
-            ss << " (not received)";
-            series_label = ss.str();
-            ImPlot::HideNextItem(true, ImGuiCond_Always);
-            ImPlot::PlotLine(series_label.c_str(), static_cast<float *>(nullptr), 0);
-          } else {
-            auto & buffer = it->second.get_buffer(source_it->member_path);
-            auto data = buffer.data();
-            auto it = data.begin();
-            series_label = ss.str();
-            size_t item_count = data.size();
-            ImPlot::PlotLineG(
-              series_label.c_str(),
-              &circular_buffer_access,
-              &it,
-              item_count);
-            if (options.topics_with_time_reference_issues.find(resolved_topic) !=
-              options.topics_with_time_reference_issues.end() &&
-              time_warned_topics.find(resolved_topic) == time_warned_topics.end())
-            {
-              // Show warning about a probably time reference issue, since no data is visible.
-              // TODO(ZeilingerM) Should be placed in the corner of the plot, like a toast
-              //                  notification, but I haven't found an appropriate ImGui
-              //                  feature to accomplish this within an ImPlot region.
-              auto warning_color = ImPlot::GetLastItemColor();
-              ImPlot::AnnotateClamped(
-                (end_sec - start_sec) / 2.0, 0.5, ImVec2(
-                  0,
-                  0), warning_color, "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
-                source_it->topic_name.c_str());
-              time_warned_topics.insert(resolved_topic);
-            }
-          }
-
-          if (ImPlot::BeginLegendPopup(series_label.c_str())) {
-            if (ImGui::Button("remove")) {
-              source_it = plot.sources.erase(source_it);
-              removed = true;
-            }
-            ImPlot::EndLegendPopup();
-          }
-        }
-        if (!removed) {
-          ++source_it;
-        }
-      }
-    }
-    for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
-      auto & axis_config = plot.axes[a];
-      // store the potentially user-defined limit
-      {
-        auto limits = ImPlot::GetPlotLimits(a);
-        axis_config.y_min = limits.Y.Min;
-        axis_config.y_max = limits.Y.Max;
-      }
     }
     return true;
   }
   return false;
+}
+
+bool PlotSourcePopup(const DataSource & source)
+{
+  bool removed = false;
+  if (ImPlot::BeginLegendPopup(source.id.c_str())) {
+    if (ImGui::Button("remove")) {
+      removed = true;
+    }
+    ImPlot::EndLegendPopup();
+  }
+  return removed;
+}
+
+void PlotSource(const DataSource & source, const PlotDataContainer & data)
+{
+  ImPlot::HideNextItem(false, ImGuiCond_Always);
+  auto it = data.begin();
+  size_t item_count = data.size();
+  ImPlot::PlotLineG(
+    source.id.c_str(),
+    &circular_buffer_access,
+    &it,
+    item_count);
+}
+
+void PlotSourceError(const DataSource & source, const PlotViewOptions & plot_opts)
+{
+  // plot empty line to show the item in legend, even though it is not received yet
+  // this allows the user to remove the source from the list
+  ImPlot::HideNextItem(true, ImGuiCond_Always);
+  ImPlot::PlotLine(source.id.c_str(), static_cast<float *>(nullptr), 0);
+  auto warning_color = ImPlot::GetLastItemColor();
+
+  auto start_sec = plot_opts.t_start.seconds();
+  auto end_sec = plot_opts.t_end.seconds();
+
+  auto warn_x_pos = (end_sec - start_sec) / 2.0;
+  auto warn_y_pos = 0.5;
+  auto warn_offset = ImVec2(0, 0);
+  if (source.state == DataSourceState::Uninitialized) {
+    ImPlot::AnnotateClamped(
+      warn_x_pos, warn_y_pos, warn_offset, warning_color, "[%s]: data not received yet",
+      source.resolved_topic_name.c_str());
+  } else if (source.state == DataSourceState::TimeStampOutOfRange) {
+    ImPlot::AnnotateClamped(
+      warn_x_pos, warn_y_pos, warn_offset, warning_color,
+      "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
+      source.resolved_topic_name.c_str());
+  } else if (source.state == DataSourceState::MessageTypeUnavailable) {
+    ImPlot::AnnotateClamped(
+      warn_x_pos, warn_y_pos, warn_offset, warning_color,
+      "WARNING [%s]: Message type is not installed",
+      source.resolved_topic_name.c_str());
+  } else if (source.state == DataSourceState::InvalidMember) {
+    auto invalid_member_path = boost::algorithm::join(source.config.member_path, ".");
+    ImPlot::AnnotateClamped(
+      warn_x_pos, warn_y_pos, warn_offset, warning_color, "WARNING [%s]: Invalid member [%s]",
+      source.resolved_topic_name.c_str(), invalid_member_path.c_str());
+  }
 }
 
 void EndPlotView()

@@ -6,11 +6,26 @@
 #include <string>
 #include <memory>
 #include <utility>
+#include <filesystem>
 #include "quickplot/application.hpp"
+#include "quickplot/config.hpp"
 
 static void glfw_error_callback(int error, const char * description)
 {
   fprintf(stderr, "Glfw Error %d: %s\n", error, description);
+}
+
+void print_exception_recursive(const std::exception & e, int level = 0, int after_level = 0)
+{
+  if (level >= after_level) {
+    std::cerr << std::string(level, ' ') << e.what() << '\n';
+  }
+  try {
+    std::rethrow_if_nested(e);
+  } catch (const std::exception & e) {
+    print_exception_recursive(e, level + 1, after_level);
+  } catch (...) {
+  }
 }
 
 int main(int argc, char ** argv)
@@ -28,7 +43,20 @@ int main(int argc, char ** argv)
   } else {
     config_file = quickplot::get_default_config_path();
   }
-  quickplot::Application app(config_file, node);
+
+  quickplot::ApplicationConfig config;
+  try {
+    config = quickplot::load_config(config_file);
+    std::cout << "Using configuration at " << config_file << std::endl;
+  } catch (const quickplot::config_error & e) {
+    std::cerr << "Failed to read configuration from '" << config_file.c_str() << "'" << std::endl;
+    print_exception_recursive(e, 0, 1);
+    std::cout << "Using default configuration" << std::endl;
+    config = quickplot::default_config();
+  }
+
+  quickplot::Application app(node);
+  app.apply_config(config);
 
   glfwSetErrorCallback(glfw_error_callback);
   if (!glfwInit()) {
@@ -167,7 +195,11 @@ int main(int argc, char ** argv)
   glfwTerminate();
 
   // save configuration before closing
-  app.save_application_config();
+  if (config_file.has_parent_path()) {
+    fs::create_directories(config_file.parent_path());
+  }
+  quickplot::save_config(app.get_config(), config_file);
+
   ros_thread.join();
   return EXIT_SUCCESS;
 }

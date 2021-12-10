@@ -2,14 +2,14 @@
 #include <string>
 #include <utility>
 #include <memory>
-#include <deque>
+#include <algorithm>
 #include <map>
 #include <list>
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
-#include <filesystem>
 #include <imgui_internal.h>
+#include <boost/algorithm/string/join.hpp>
 #include <rosidl_typesupport_cpp/identifier.hpp>
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
 #include "quickplot/config.hpp"
@@ -23,21 +23,36 @@ namespace quickplot
 {
 
 constexpr const char * TOPIC_LIST_WINDOW_ID = "TopicList";
-
 constexpr float HOVER_TOOLTIP_DEBOUNCE = 0.4;
+
+struct MemberPayload
+{
+  const char * topic_name;
+  size_t member_index;
+};
+
+inline std::string source_id(const DataSource & source)
+{
+  std::stringstream ss;
+  ss << source.resolved_topic_name << "/";
+  for (size_t i = 0; i < source.config.member_path.size(); i++) {
+    ss << source.config.member_path[i];
+    if (i + 1 < source.config.member_path.size()) {
+      ss << ".";
+    }
+  }
+  return ss.str();
+}
 
 class Application
 {
 private:
-  fs::path active_config_file_;
-  ApplicationConfig config_;
-
   std::shared_ptr<QuickPlotNode> node_;
   rclcpp::Event::SharedPtr graph_event_;
   rclcpp::JumpHandler::SharedPtr jump_handler_;
 
-  double edited_history_length_;
-
+  // maps already-resolved full topic names to a single ROS type, if there are only publishers
+  // of one type
   std::map<std::string, std::string> available_topics_to_types_;
   std::unordered_map<std::string,
     std::shared_ptr<MessageIntrospection>> message_type_to_introspection_;
@@ -45,15 +60,15 @@ private:
   // set of message types for which no typesupport is installed
   std::unordered_set<std::string> message_type_unavailable_;
 
-  // queue of requested topic data, for which the topic metadata has not been received yet
-  std::mutex data_source_queue_mutex_;
-  std::deque<DataSourceConfig> uninitialized_data_source_queue_;
-
-  std::unordered_set<std::string> topics_with_time_reference_issues_;
+  double history_length_;
+  // mutex for plot metadata
+  std::mutex plot_mutex_;
+  // plot metadata
+  std::vector<Plot> plots_;
 
 public:
-  explicit Application(fs::path config_file, std::shared_ptr<QuickPlotNode> _node)
-  : active_config_file_(config_file), node_(_node)
+  explicit Application(std::shared_ptr<QuickPlotNode> _node)
+  : node_(_node), history_length_(1.0), plots_()
   {
     graph_event_ = node_->get_graph_event();
     graph_event_->set(); // set manually to trigger initial topics query
@@ -62,52 +77,65 @@ public:
       [] {}, std::bind(&Application::on_time_jump, this, _1), rcl_jump_threshold_t {
         .on_clock_change = true,
         .min_forward = {
-          .nanoseconds = RCUTILS_S_TO_NS(1),
+          .nanoseconds = RCUTILS_S_TO_NS(10),
         },
         .min_backward = {
-          .nanoseconds = -RCUTILS_S_TO_NS(1),
+          .nanoseconds = -1,
         },
       });
-
-    try {
-      config_ = load_config(active_config_file_);
-    } catch (const config_error & e) {
-      std::cerr << "Failed to read configuration from '" << config_file.c_str() << "'" << std::endl;
-      print_exception_recursive(e, 0, 1);
-      std::cout << "Using default configuration" << std::endl;
-      config_ = default_config();
-    }
-    apply_config(config_);
   }
 
   void on_time_jump(const rcl_time_jump_t & time_jump)
   {
-    std::cerr << "time jump occured ";
     if (time_jump.clock_change == RCL_ROS_TIME_ACTIVATED ||
       time_jump.clock_change == RCL_ROS_TIME_DEACTIVATED)
     {
-      std::cerr << "due to clock change";
-    } else {
-      std::cerr << "by a delta of " << time_jump.delta.nanoseconds << "ns";
+      std::cerr << "clock changed";
+    } else if (time_jump.delta.nanoseconds != 0) {
+      // check should not be necessary
+      // fix merged with https://github.com/ros2/rcl/pull/948 and should be in ROS Humble
+      std::cerr << "time jump by a delta of " << time_jump.delta.nanoseconds << "ns";
     }
     std::cerr << ", clearing all data" << std::endl;
-    for (auto & [_, subscription]: node_->topics_to_subscriptions) {
-      subscription.clear_all_data();
-    }
+    clear_data();
   }
 
   void apply_config(ApplicationConfig config)
   {
-    edited_history_length_ = config.history_length;
     {
-      std::unique_lock<std::mutex> lock(data_source_queue_mutex_);
-      for (auto plot : config.plots) {
-        for (auto source: plot.sources) {
-          uninitialized_data_source_queue_.push_back(source);
-        }
-      }
+      std::unique_lock<std::mutex> lock(plot_mutex_);
+      plots_.clear();
+      std::transform(
+        config.plots.begin(), config.plots.end(), std::back_inserter(plots_),
+        [](const auto & plot_config) {
+          Plot p;
+          for (const auto & s : plot_config.sources) {
+            auto & new_s = p.sources.emplace_back();
+            new_s.config = s;
+            new_s.state = DataSourceState::Uninitialized;
+          }
+          p.axes = plot_config.axes;
+          return p;
+        });
     }
-    add_topics_from_queue();
+    history_length_ = config.history_length;
+    initialize_pending_sources();
+  }
+
+  ApplicationConfig get_config() const
+  {
+    ApplicationConfig config;
+    config.history_length = history_length_;
+    std::transform(
+      plots_.begin(), plots_.end(), std::back_inserter(config.plots), [](const auto & plot) {
+        PlotConfig p;
+        for (const auto & s : plot.sources) {
+          p.sources.insert(s.config);
+        }
+        p.axes = plot.axes;
+        return p;
+      });
+    return config;
   }
 
   void load_introspection_or_insert_missing(std::string type)
@@ -126,46 +154,38 @@ public:
     }
   }
 
-  void add_topics_from_queue()
+  void initialize_pending_sources()
   {
-    std::unique_lock<std::mutex> lock(data_source_queue_mutex_);
-    for (auto queue_it = uninitialized_data_source_queue_.begin();
-      queue_it != uninitialized_data_source_queue_.end(); )
-    {
-      auto resolved_topic = node_->get_node_topics_interface()->resolve_topic_name(
-        queue_it->topic_name);
-      auto type_it = available_topics_to_types_.find(resolved_topic);
-      if (type_it != available_topics_to_types_.end()) {
-        // if type is known, initialize and remove from queue
-        const auto & itsp_it = message_type_to_introspection_.find(type_it->second);
-        if (itsp_it != message_type_to_introspection_.end()) {
-          MessageMember member;
-          auto member_info_opt = itsp_it->second->get_member_info(queue_it->member_path);
-          if (member_info_opt.has_value()) {
-            member.path = queue_it->member_path;
-            member.info = member_info_opt.value();
-            node_->add_topic_field(resolved_topic, itsp_it->second, member);
-          } else {
-            // TODO(ZeilingerM) show error and warning on GUI, don't crash
-            throw std::invalid_argument("could not find member in message type");
+    std::unique_lock<std::mutex> lock(plot_mutex_);
+    for (auto & plot : plots_) {
+      for (auto & source : plot.sources) {
+        if (source.state == DataSourceState::Uninitialized) {
+          auto resolved_topic = node_->get_node_topics_interface()->resolve_topic_name(
+            source.config.topic_name);
+          source.resolved_topic_name = resolved_topic;
+          source.id = source_id(source);
+          auto type_it = available_topics_to_types_.find(resolved_topic);
+          if (type_it != available_topics_to_types_.end()) {
+            // if type is known, initialize and set ready state
+            const auto & itsp_it = message_type_to_introspection_.find(type_it->second);
+            if (itsp_it != message_type_to_introspection_.end()) {
+              MessageMember member;
+              auto member_info_opt = itsp_it->second->get_member_info(source.config.member_path);
+              if (member_info_opt.has_value()) {
+                member.path = source.config.member_path;
+                member.info = member_info_opt.value();
+                node_->add_topic_field(resolved_topic, itsp_it->second, member);
+                source.state = DataSourceState::Ok;
+              } else {
+                source.state = DataSourceState::InvalidMember;
+              }
+            }
+            // if type is not known, we leave the source at initialized, and the GUI should show
+            // the state as unavailable
           }
         }
-        queue_it = uninitialized_data_source_queue_.erase(queue_it);
-      } else {
-        // if type is not known yet, wait for next graph event
-        // TODO(ZeilingerM) add timeout to wait for topics and types specific in configuration
-        //                  display error on GUI after timeout
-        ++queue_it;
       }
     }
-  }
-
-  void save_application_config()
-  {
-    if (active_config_file_.has_parent_path()) {
-      fs::create_directories(active_config_file_.parent_path());
-    }
-    save_config(config_, active_config_file_);
   }
 
   bool TopicEntry(const std::string & topic, const std::string & type)
@@ -223,8 +243,8 @@ public:
       } else { /* not type_available */
         ImGui::PopStyleColor();
 
-        // color was eye-droppert' from Rviz display warnings
-        // TODO(ZeilingerM) single hardcoded color is of course not robust against theme changes
+        // color was eye-dropped from Rviz display warnings
+        // TODO(ZeilingerM) single hardcoded color is not robust against theme changes
         static ImVec4 WARNING_COLOR = static_cast<ImVec4>(ImColor::HSV(0.1083f, 0.968f, 0.867f));
         ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
         ImGui::TextWrapped("message type '%s' is not available", type.c_str());
@@ -243,7 +263,18 @@ public:
     ImGui::TreePop();
   }
 
-  void update()
+  void set_source_states(const std::string & resolved_topic_name, DataSourceState state)
+  {
+    for (auto & plot : plots_) {
+      for (auto & source : plot.sources) {
+        if (source.resolved_topic_name == resolved_topic_name) {
+          source.state = state;
+        }
+      }
+    }
+  }
+
+  void update_topics()
   {
     if (graph_event_->check_and_clear()) {
       auto topics_and_types = node_->get_topic_names_and_types();
@@ -261,12 +292,78 @@ public:
           if (entry->second != new_type) {
             std::invalid_argument("type of topic " + topic + " changed");
           }
+        } else {
+          // for new topics, load their introspection support
+          load_introspection_or_insert_missing(new_type);
         }
-        load_introspection_or_insert_missing(new_type);
       }
-      add_topics_from_queue();
+      initialize_pending_sources();
     }
+  }
 
+  void detect_clock_issues(const PlotViewOptions & plot_opts)
+  {
+    std::unique_lock<std::mutex> lock(node_->topic_mutex);
+    auto start_sec = plot_opts.t_start.seconds();
+    auto end_sec = plot_opts.t_end.seconds();
+
+    for (auto & [topic, subscription] : node_->topics_to_subscriptions) {
+      for (auto & [_, buffer] : subscription.buffers_) {
+        //
+        // Check received data for clock mismatch issues.
+        //
+        // 1) The plotting tool uses the system clock, but data is published in ros clock.
+        //    In this case the data buffer would be cleared, because the plot start timestamp will be much larger than the last data timestamp
+        bool clock_issue_likely = false;
+        bool clock_issue_disproven = false;
+        bool had_data = !buffer.empty();
+        buffer.clear_data_up_to(plot_opts.t_start);
+        if (had_data) {
+          if (buffer.empty()) {
+            clock_issue_likely = buffer.empty();
+          } else {
+            clock_issue_disproven = true;
+          }
+        }
+
+        // 2) The plotting tool uses the ROS clock, but data is published with system time stamps
+        //    In this case all data would be outside the view window, with much larger timestamps, and slowly accumulate
+        if (!clock_issue_likely) {
+          auto data = buffer.data();
+          clock_issue_likely = std::all_of(
+            data.begin(), data.end(),
+            [start_sec, end_sec](const ImPlotPoint & item) {
+              return item.x < start_sec || item.x > end_sec;
+            });
+        }
+        if (clock_issue_likely) {
+          set_source_states(topic, DataSourceState::TimeStampOutOfRange);
+        } else if (clock_issue_disproven) {
+          set_source_states(topic, DataSourceState::Ok);
+        }
+      }
+    }
+  }
+
+  void update()
+  {
+    update_topics();
+    TopicList();
+
+    auto t = node_->now();
+    auto history_dur = rclcpp::Duration::from_seconds(history_length_);
+
+    auto plot_opts = PlotViewOptions {
+      .use_sim_time = node_->get_parameter("use_sim_time").as_bool(),
+      .t_start = t - history_dur,
+      .t_end = t,
+    };
+    detect_clock_issues(plot_opts);
+    PlotDock(plot_opts);
+  }
+
+  void TopicList()
+  {
     ImGuiWindowFlags list_window_flags = ImGuiWindowFlags_None;
     if (ImGui::Begin(TOPIC_LIST_WINDOW_ID, nullptr, list_window_flags)) {
       if (!node_->topics_to_subscriptions.empty()) {
@@ -325,71 +422,53 @@ public:
       }
     }
     ImGui::End();
+  }
 
-    auto t = node_->now();
-    auto history_dur = rclcpp::Duration::from_seconds(config_.history_length);
+  void PlotDock(const PlotViewOptions & plot_opts)
+  {
+    std::unique_lock<std::mutex> lock(node_->topic_mutex);
 
-    auto plot_opts = PlotViewOptions {
-      .use_sim_time = node_->get_parameter("use_sim_time").as_bool(),
-      .t_start = t - history_dur,
-      .t_end = t,
-      .topics_with_time_reference_issues = {},
-    };
-    auto start_sec = plot_opts.t_start.seconds();
-    auto end_sec = plot_opts.t_end.seconds();
-
-    for (auto & [topic, subscription] : node_->topics_to_subscriptions) {
-      for (auto & [_, buffer] : subscription.buffers_) {
-
-        //
-        // Check received data for two cases of time reference issues.
-        //
-        // 1) The plotting tool runs with real time reference, but data is published in
-        //    simulation time. In this case the buffer would almost certainly be cleared,
-        //    completely, because the start timestamp will be further in the future than the
-        //    last data timestamp.
-        bool time_reference_issue_likely = false;
-        bool time_reference_issue_disproven = false;
-        bool had_data = !buffer.empty();
-        buffer.clear_data_up_to(plot_opts.t_start);
-        if (had_data) {
-          if (buffer.empty()) {
-            time_reference_issue_likely = buffer.empty();
-          } else {
-            time_reference_issue_disproven = true;
-          }
-        }
-
-        // 2) The plotting tool runs in simulation time, but data is published with real-time
-        //    stamps.
-        if (!time_reference_issue_likely) {
-          auto data = buffer.data();
-          time_reference_issue_likely = std::all_of(
-            data.begin(), data.end(),
-            [start_sec, end_sec](const ImPlotPoint & item) {
-              return item.x < start_sec || item.x > end_sec;
-            });
-        }
-        if (time_reference_issue_likely) {
-          topics_with_time_reference_issues_.insert(topic);
-        } else if (time_reference_issue_disproven) {
-          topics_with_time_reference_issues_.erase(topic);
-        }
-      }
-    }
-    plot_opts.topics_with_time_reference_issues = topics_with_time_reference_issues_;
-
-    auto plot_it = config_.plots.begin();
-    for (size_t i = 0; plot_it != config_.plots.end(); i++) {
+    auto plot_it = plots_.begin();
+    for (size_t i = 0; plot_it != plots_.end(); i++) {
       auto id = "plot" + std::to_string(i);
-      auto & plot_config = *plot_it;
-      bool plot_window = true;
+      bool plot_window_enabled = true;
 
       // for plot windows, the padding is redundant with dock borders
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0, 0.0));
-      if (ImGui::Begin(id.c_str(), &plot_window)) {
+      if (ImGui::Begin(id.c_str(), &plot_window_enabled)) {
         ImGui::PopStyleVar();
-        if (PlotView(id.c_str(), node_, plot_config, plot_opts)) {
+
+        if (PlotView(id.c_str(), *plot_it, plot_opts)) {
+          for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot_it->axes.size()); a++) {
+            ImPlot::SetPlotYAxis(a);
+            for (auto source_it = plot_it->sources.begin(); source_it != plot_it->sources.end(); ) {
+              auto & source = *source_it;
+              if (source.config.axis != a) {
+                // source does not occur in this plot axis
+                continue;
+              }
+
+              if (source.state == DataSourceState::Ok) {
+                auto it = node_->topics_to_subscriptions.find(source.resolved_topic_name);
+                rcpputils::require_true(it != node_->topics_to_subscriptions.end());
+                PlotSource(source, it->second.get_buffer(source.config.member_path).data());
+              } else {
+                PlotSourceError(source, plot_opts);
+              }
+
+              if (PlotSourcePopup(source)) {
+                source_it = plot_it->sources.erase(source_it);
+              } else {
+                ++source_it;
+              }
+            }
+            auto & axis_config = plot_it->axes[a];
+            // store the current plot limits, in case they were changed via user input
+            auto limits = ImPlot::GetPlotLimits(a);
+            axis_config.y_min = limits.Y.Min;
+            axis_config.y_max = limits.Y.Max;
+          }
+
           if (ImPlot::BeginDragDropTarget()) {
             if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
               auto topic_name = std::string(static_cast<char *>(payload->Data));
@@ -397,11 +476,11 @@ public:
                 .topic_name = topic_name.c_str(),
                 .member_index = 1,
               };
-              accept_member_payload(plot_config, ImPlotYAxis_1, &member_payload);
+              accept_member_payload(*plot_it, ImPlotYAxis_1, &member_payload);
             }
             if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
               accept_member_payload(
-                plot_config, ImPlotYAxis_1,
+                *plot_it, ImPlotYAxis_1,
                 static_cast<MemberPayload *>(payload->Data));
             }
             ImPlot::EndDragDropTarget();
@@ -414,11 +493,11 @@ public:
                   .topic_name = topic_name.c_str(),
                   .member_index = 1,
                 };
-                accept_member_payload(plot_config, axis, &member_payload);
+                accept_member_payload(*plot_it, axis, &member_payload);
               }
               if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
                 accept_member_payload(
-                  plot_config, axis,
+                  *plot_it, axis,
                   static_cast<MemberPayload *>(payload->Data));
               }
               ImPlot::EndDragDropTarget();
@@ -426,8 +505,8 @@ public:
           }
           EndPlotView();
         }
-        if (!plot_window) {
-          plot_it = config_.plots.erase(plot_it);
+        if (!plot_window_enabled) {
+          plot_it = plots_.erase(plot_it);
         } else {
           ++plot_it;
         }
@@ -438,26 +517,50 @@ public:
 
   void activate_topic_field(MemberPayload payload)
   {
-    if (config_.plots.empty()) {
-      auto & plot_config = config_.plots.emplace_back();
-      plot_config.axes = {AxisConfig{.y_min = -1, .y_max = 1}};
+    if (plots_.empty()) {
+      auto & new_plot = plots_.emplace_back();
+      new_plot.axes = {AxisConfig{.y_min = -1, .y_max = 1}};
+    } else if (plots_[0].axes.empty()) {
+      auto& new_axis = plots_[0].axes.emplace_back();
+      new_axis.y_min = -1.0;
+      new_axis.y_max = 1.0;
     }
-    accept_member_payload(config_.plots[0], ImPlotYAxis_1, &payload);
+    accept_member_payload(plots_[0], ImPlotYAxis_1, &payload);
   }
 
-  void accept_member_payload(PlotConfig & plot_config, ImPlotYAxis axis, MemberPayload * payload)
+  void accept_member_payload(Plot & plot, ImPlotYAxis axis, MemberPayload * payload)
   {
     auto message_type = available_topics_to_types_.at(payload->topic_name);
     auto introspection = message_type_to_introspection_.at(message_type);
     auto member_infos = introspection->members().begin();
     std::advance(member_infos, payload->member_index);
     node_->add_topic_field(payload->topic_name, introspection, *member_infos);
-    plot_config.sources.insert(
-      DataSourceConfig {
-        .topic_name = payload->topic_name,
-        .member_path = member_infos->path,
-        .axis = axis,
-      });
+
+    DataSourceConfig source_config;
+    source_config.topic_name = payload->topic_name;
+    source_config.member_path = member_infos->path;
+    source_config.axis = axis;
+
+    auto it = std::find_if(plot.sources.begin(), plot.sources.end(), [&source_config](const auto& src) {
+      return src.config == source_config;
+    });
+    if (it != plot.sources.end()) {
+      // ensure the same source config is not added twice
+      return;
+    }
+    auto & source = plot.sources.emplace_back();
+    source.resolved_topic_name = payload->topic_name;
+    // assume the state is Ok, since the topic was drag-dropped from the available list
+    source.state = DataSourceState::Ok;
+    source.config = source_config;
+    source.id = source_id(source);
+  }
+
+  void clear_data()
+  {
+    for (auto & [_, subscription]: node_->topics_to_subscriptions) {
+      subscription.clear_all_data();
+    }
   }
 };
 
