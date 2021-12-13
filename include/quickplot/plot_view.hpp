@@ -189,17 +189,17 @@ void PlotSourceError(const DataSource & source, const PlotViewOptions & plot_opt
   } else if (source.state == DataSourceState::TimeStampOutOfRange) {
     ImPlot::AnnotateClamped(
       warn_x_pos, warn_y_pos, warn_offset, warning_color,
-      "WARNING [%s]: all data points are outside of the x range, it may be required to set use_sim_time when launching quickplot",
+      "WARNING [%s]: all samples are outside of the x range; if you are using sim time set use_sim_time:=true when launching quickplot",
       source.resolved_topic_name.c_str());
   } else if (source.state == DataSourceState::MessageTypeUnavailable) {
     ImPlot::AnnotateClamped(
       warn_x_pos, warn_y_pos, warn_offset, warning_color,
-      "WARNING [%s]: Message type is not installed",
+      "WARNING [%s]: failed to load message type",
       source.resolved_topic_name.c_str());
   } else if (source.state == DataSourceState::InvalidMember) {
     auto invalid_member_path = boost::algorithm::join(source.config.member_path, ".");
     ImPlot::AnnotateClamped(
-      warn_x_pos, warn_y_pos, warn_offset, warning_color, "WARNING [%s]: Invalid member [%s]",
+      warn_x_pos, warn_y_pos, warn_offset, warning_color, "WARNING [%s]: invalid message member [%s]",
       source.resolved_topic_name.c_str(), invalid_member_path.c_str());
   }
 }

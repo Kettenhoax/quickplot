@@ -1,5 +1,7 @@
 A realtime plotting tool for ROS2.
 
+![preview](doc/quickplot.png)
+
 # usage
 
 ```bash
@@ -27,31 +29,28 @@ plots:
           - twist
           - angular
           - z
-        axis: 2
+        axis: 1
 ```
 
-# roadmap
+# planned features
 
-features
-
-* [ ] diagnostics per topic, with warning symbol in the list
-* [ ] pausing
-* [ ] plot length of geometry_msgs/msg/Vector3
-* [ ] unit suggestions based on convention
-* [ ] range suggestions based on unit (angles -pi to pi)
+* [ ] use length of geometry_msgs/msg/Vector3 as data source
 * [ ] suggest auto-fit if all y values are off-plot
-* [ ] pass flag to not start with default config
-* [ ] show error states on topic communication
+* [ ] show error states on topic communication in topic list
 * [ ] warning about NaN values
-* [ ] if the config path in the argument does not exist, create new one
-* [ ] show array elements, default to first item, aggregate array elements
-* [ ] axis label suggestion (e.g. m/s for twist.linear)
 
-* [ ] covariance viz
-* [ ] array viz
+* [ ] axis unit label suggestion (e.g. m/s for twist.linear)
+* [ ] range suggestions based on suggested unit (e.g. angles -pi to pi)
+
+* [ ] visualize covariance matrices in nav_msgs/Odometry or geometry_msgs/Pose as heatmaps
+* [ ] use array members as data sources
 
 ## tests
 
-To test GUI features, use the provided scripts in the `test` directory
+To test GUI features, use the scripts in `test` to publish example data.
 
 * `test/publish_sim_twist.py` publishes velocity in sim time, and a sim time clock; the application should display a warning if launched with `use_sim_time:=false`
+
+* `test/publish_real_twist.py` publishes velocity in real time, and a sim time clock; the application should display a warning if launched with `use_sim_time:=true`
+* 
+* `test/unknown_type` contains a Dockerfile to build an image with a message type unknown to the host system, quickplot should display a warning about a missing message type
