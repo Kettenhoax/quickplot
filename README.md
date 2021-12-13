@@ -2,6 +2,11 @@ A realtime plotting tool for ROS2.
 
 ![preview](doc/quickplot.png)
 
+# installation
+
+Add [imgui_vendor](https://github.com/Kettenhoax/imgui_vendor) and [implot_vendor](https://github.com/Kettenhoax/implot_vendor) to your ROS2 workspace, and build with `colcon`.
+Make sure to clone the vendor packages with submodules.
+
 # usage
 
 ```bash
