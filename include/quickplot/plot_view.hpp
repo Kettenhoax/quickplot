@@ -75,7 +75,14 @@ ImPlotPoint circular_buffer_access(void * data, int idx)
   return buffer->operator[](idx);
 }
 
-bool PlotView(const char * id, Plot & plot, const PlotViewOptions & options)
+struct PlotViewResult {
+  bool displayed;
+  float time_scale_delta;
+
+  PlotViewResult() : displayed(false), time_scale_delta(0.0f) {}
+};
+
+PlotViewResult PlotView(const char * id, Plot & plot, const PlotViewOptions & options)
 {
   for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
     const auto & axis_config = plot.axes[a];
@@ -119,6 +126,7 @@ bool PlotView(const char * id, Plot & plot, const PlotViewOptions & options)
   }
 
   std::unordered_set<std::string> time_warned_topics;
+  PlotViewResult result;
   if (ImPlot::BeginPlot(
       id, x_label.str().c_str(), nullptr, ImVec2(-1, -1),
       (plot.axes.size() >= 2 ? ImPlotFlags_YAxis2 : 0) |
@@ -128,10 +136,12 @@ bool PlotView(const char * id, Plot & plot, const PlotViewOptions & options)
       ImGui::BeginTooltip();
       ImGui::Text("now: %.2f", options.t_end.seconds());
       ImGui::EndTooltip();
+
+      result.time_scale_delta = ImGui::GetIO().MouseWheel;
     }
-    return true;
+    result.displayed = true;
   }
-  return false;
+  return result;
 }
 
 bool PlotSourcePopup(const DataSource & source)

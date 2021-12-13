@@ -438,7 +438,10 @@ public:
       if (ImGui::Begin(id.c_str(), &plot_window_enabled)) {
         ImGui::PopStyleVar();
 
-        if (PlotView(id.c_str(), *plot_it, plot_opts)) {
+        auto plot_view_result = PlotView(id.c_str(), *plot_it, plot_opts);
+        if (plot_view_result.displayed) {
+          history_length_ += plot_view_result.time_scale_delta;
+
           for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot_it->axes.size()); a++) {
             ImPlot::SetPlotYAxis(a);
             for (auto source_it = plot_it->sources.begin(); source_it != plot_it->sources.end(); ) {

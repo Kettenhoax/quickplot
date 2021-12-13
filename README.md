@@ -3,10 +3,10 @@ A realtime plotting tool for ROS2.
 # usage
 
 ```bash
-ros2 run quickplot quickplot [config_file.yaml] [--ros-args -p use_sim_time:=true]
+ros2 run quickplot quickplot [config.yaml] [--ros-args -p use_sim_time:=true]
 ```
 
-Plot config files are designed to be concise, with ROS topics as first-class citizens, so they can potentially be hand-written.
+Plot config files are intended to be hand-written and source-controlled as part of a ROS project, same as Rviz configuration.
 
 ```
 # example to plot speed and angular velocity of a Twist message on two axes
@@ -50,6 +50,7 @@ features
 * [ ] if the config path in the argument does not exist, create new one
 * [ ] show array elements, default to first item, aggregate array elements
 * [ ] mouse wheel scroll time
+* [ ] axis label suggestion (e.g. m/s for twist.linear)
 
 * [ ] covariance viz
 * [ ] array viz
