@@ -32,10 +32,6 @@ plots:
 
 # roadmap
 
-Bugs and bug sources
-
-* [ ] click on member entry immediately adds to plot, but should allow dragdrop
-
 features
 
 * [ ] diagnostics per topic, with warning symbol in the list
@@ -49,7 +45,6 @@ features
 * [ ] warning about NaN values
 * [ ] if the config path in the argument does not exist, create new one
 * [ ] show array elements, default to first item, aggregate array elements
-* [ ] mouse wheel scroll time
 * [ ] axis label suggestion (e.g. m/s for twist.linear)
 
 * [ ] covariance viz

@@ -60,10 +60,9 @@ private:
   // set of message types for which no typesupport is installed
   std::unordered_set<std::string> message_type_unavailable_;
 
+  // length of history in seconds to display in all plots
   double history_length_;
-  // mutex for plot metadata
-  std::mutex plot_mutex_;
-  // plot metadata
+  // list of plots to display, and their metadata
   std::vector<Plot> plots_;
 
 public:
@@ -102,22 +101,27 @@ public:
 
   void apply_config(ApplicationConfig config)
   {
-    {
-      std::unique_lock<std::mutex> lock(plot_mutex_);
-      plots_.clear();
-      std::transform(
-        config.plots.begin(), config.plots.end(), std::back_inserter(plots_),
-        [](const auto & plot_config) {
-          Plot p;
-          for (const auto & s : plot_config.sources) {
-            auto & new_s = p.sources.emplace_back();
-            new_s.config = s;
-            new_s.state = DataSourceState::Uninitialized;
+    plots_.clear();
+    std::transform(
+      config.plots.begin(), config.plots.end(), std::back_inserter(plots_),
+      [](const auto & plot_config) {
+        Plot p;
+        int max_axis = 0;
+        for (const auto & s : plot_config.sources) {
+          auto & new_s = p.sources.emplace_back();
+          new_s.config = s;
+          new_s.state = DataSourceState::Uninitialized;
+          if (s.axis > max_axis) {
+            max_axis = s.axis;
           }
-          p.axes = plot_config.axes;
-          return p;
+        }
+        p.axes = plot_config.axes;
+        p.axes.resize(static_cast<size_t>(max_axis + 1), AxisConfig {
+          .y_min = -1.0,
+          .y_max = 1.0,
         });
-    }
+        return p;
+      });
     history_length_ = config.history_length;
     initialize_pending_sources();
   }
@@ -156,7 +160,6 @@ public:
 
   void initialize_pending_sources()
   {
-    std::unique_lock<std::mutex> lock(plot_mutex_);
     for (auto & plot : plots_) {
       for (auto & source : plot.sources) {
         if (source.state == DataSourceState::Uninitialized) {
@@ -217,6 +220,10 @@ public:
         for (const auto & member : introspection->members()) {
           std::string member_formatted = boost::algorithm::join(member.path, ".");
           ImGui::Selectable(member_formatted.c_str(), false);
+          MemberPayload payload {
+            .topic_name = topic.c_str(),
+            .member_index = i,
+          };
           if (ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
@@ -226,13 +233,9 @@ public:
               ImGui::Text("or drag and drop on plot of choice");
               ImGui::EndTooltip();
             }
-          }
-          MemberPayload payload {
-            .topic_name = topic.c_str(),
-            .member_index = i,
-          };
-          if (ImGui::IsItemActivated()) {
-            activate_topic_field(payload);
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+              add_topic_field_to_plot(payload);
+            }
           }
           if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
             ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
@@ -426,8 +429,6 @@ public:
 
   void PlotDock(const PlotViewOptions & plot_opts)
   {
-    std::unique_lock<std::mutex> lock(node_->topic_mutex);
-
     auto plot_it = plots_.begin();
     for (size_t i = 0; plot_it != plots_.end(); i++) {
       auto id = "plot" + std::to_string(i);
@@ -443,15 +444,19 @@ public:
           history_length_ += plot_view_result.time_scale_delta;
 
           for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot_it->axes.size()); a++) {
-            ImPlot::SetPlotYAxis(a);
             for (auto source_it = plot_it->sources.begin(); source_it != plot_it->sources.end(); ) {
               auto & source = *source_it;
               if (source.config.axis != a) {
-                // source does not occur in this plot axis
+                // ensure source occurs in this plot axis
+                ++source_it;
                 continue;
               }
 
+              // set axis just before matching source was found, to ensure axis is only displayed
+              // if corresponding source exists
+              ImPlot::SetPlotYAxis(a);
               if (source.state == DataSourceState::Ok) {
+                std::unique_lock<std::mutex> lock(node_->topic_mutex);
                 auto it = node_->topics_to_subscriptions.find(source.resolved_topic_name);
                 rcpputils::require_true(it != node_->topics_to_subscriptions.end());
                 PlotSource(source, it->second.get_buffer(source.config.member_path).data());
@@ -488,7 +493,7 @@ public:
             }
             ImPlot::EndDragDropTarget();
           }
-          for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2, ImPlotYAxis_3}) {
+          for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2}) {
             if (ImPlot::BeginDragDropTargetY(axis)) {
               if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
                 auto topic_name = std::string(static_cast<char *>(payload->Data));
@@ -518,13 +523,13 @@ public:
     }
   }
 
-  void activate_topic_field(MemberPayload payload)
+  void add_topic_field_to_plot(MemberPayload payload)
   {
     if (plots_.empty()) {
       auto & new_plot = plots_.emplace_back();
       new_plot.axes = {AxisConfig{.y_min = -1, .y_max = 1}};
     } else if (plots_[0].axes.empty()) {
-      auto& new_axis = plots_[0].axes.emplace_back();
+      auto & new_axis = plots_[0].axes.emplace_back();
       new_axis.y_min = -1.0;
       new_axis.y_max = 1.0;
     }
@@ -544,9 +549,10 @@ public:
     source_config.member_path = member_infos->path;
     source_config.axis = axis;
 
-    auto it = std::find_if(plot.sources.begin(), plot.sources.end(), [&source_config](const auto& src) {
-      return src.config == source_config;
-    });
+    auto it = std::find_if(
+      plot.sources.begin(), plot.sources.end(), [&source_config](const auto & src) {
+        return src.config == source_config;
+      });
     if (it != plot.sources.end()) {
       // ensure the same source config is not added twice
       return;
@@ -557,6 +563,12 @@ public:
     source.state = DataSourceState::Ok;
     source.config = source_config;
     source.id = source_id(source);
+
+    while (static_cast<size_t>(axis + 1) > plot.axes.size()) {
+      auto & new_axis = plot.axes.emplace_back();
+      new_axis.y_min = -1.0;
+      new_axis.y_max = 1.0;
+    }
   }
 
   void clear_data()
