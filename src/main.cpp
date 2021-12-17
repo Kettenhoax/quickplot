@@ -72,7 +72,7 @@ int main(int argc, char ** argv)
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
   glfwWindowHint(GLFW_SAMPLES, 8);
 
-  GLFWwindow * window = glfwCreateWindow(1280, 720, "quickplot", NULL, NULL);
+  GLFWwindow * window = glfwCreateWindow(1280, 480 * config.plots.size(), "quickplot", NULL, NULL);
   if (window == NULL) {
     return EXIT_FAILURE;
   }
