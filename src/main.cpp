@@ -28,6 +28,8 @@ void print_exception_recursive(const std::exception & e, int level = 0, int afte
   }
 }
 
+static bool first_time = true;
+
 int main(int argc, char ** argv)
 {
   auto non_ros_args = rclcpp::init_and_remove_ros_arguments(argc, argv);
@@ -125,7 +127,7 @@ int main(int argc, char ** argv)
 
     static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
     // build parent window with dock spaces
-    ImGuiWindowFlags parent_window_flags = ImGuiWindowFlags_None;
+    ImGuiWindowFlags parent_window_flags = ImGuiWindowFlags_NoSavedSettings;
     parent_window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
     parent_window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
@@ -146,7 +148,6 @@ int main(int argc, char ** argv)
     ImGuiID dockspace_id = ImGui::GetID("ParentDockSpace");
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
 
-    static auto first_time = true;
     if (first_time) {
       first_time = false;
       ImGui::DockBuilderRemoveNode(dockspace_id); // clear any previous layout
@@ -164,7 +165,18 @@ int main(int argc, char ** argv)
 
       // we now dock our windows into the docking node we made above
       ImGui::DockBuilderDockWindow(quickplot::TOPIC_LIST_WINDOW_ID, dock_id_list);
-      ImGui::DockBuilderDockWindow("plot0", dock_id_plot);
+
+      if (config.plots.size() >= 1) {
+        ImGui::DockBuilderDockWindow("plot0", dock_id_plot);
+        float equal_ratio = 1.0 / config.plots.size();
+        for (size_t i = 1; i < config.plots.size(); i++) {
+          ImGui::DockBuilderSplitNode(
+            dock_id_plot, ImGuiDir_Down,
+            equal_ratio, &dock_id_plot, nullptr);
+          std::string win_id = "plot" + std::to_string(i);
+          ImGui::DockBuilderDockWindow(win_id.c_str(), dock_id_plot);
+        }
+      }
       ImGui::DockBuilderFinish(dockspace_id);
     }
 
