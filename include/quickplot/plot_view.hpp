@@ -28,9 +28,7 @@ struct DataSource
 {
   DataSourceConfig config;
   DataSourceState state;
-  // must be accessed only if state is Ok
   std::string id;
-  // must be accessed only if state is Ok
   std::string resolved_topic_name;
 
   inline bool operator==(const DataSource & other) const
@@ -168,6 +166,27 @@ void PlotSource(const DataSource & source, const PlotDataContainer & data)
     item_count);
 }
 
+static const char* UninitializedText = "data not received yet";
+static const char* TimeStampOutOfRangeText = "all samples are outside of the x range; if you are using sim time set use_sim_time:=true when launching quickplot";
+static const char* MessageTypeUnavailableText = "failed to load message type";
+static const char* InvalidMemberText = "invalid message member";
+
+const char* get_state_message(DataSourceState state) {
+  if (state == DataSourceState::Uninitialized) {
+    return UninitializedText;
+  }
+  if (state == DataSourceState::TimeStampOutOfRange) {
+    return TimeStampOutOfRangeText;
+  }
+  if (state == DataSourceState::MessageTypeUnavailable) {
+    return MessageTypeUnavailableText;
+  }
+  if (state == DataSourceState::InvalidMember) {
+    return InvalidMemberText;
+  }
+  return nullptr;
+}
+
 void PlotSourceError(const DataSource & source, const PlotViewOptions & plot_opts)
 {
   // plot empty line to show the item in legend, even though it is not received yet
@@ -182,26 +201,11 @@ void PlotSourceError(const DataSource & source, const PlotViewOptions & plot_opt
   auto warn_x_pos = (end_sec - start_sec) / 2.0;
   auto warn_y_pos = 0.5;
   auto warn_offset = ImVec2(0, 0);
-  if (source.state == DataSourceState::Uninitialized) {
-    ImPlot::AnnotateClamped(
-      warn_x_pos, warn_y_pos, warn_offset, warning_color, "[%s]: data not received yet",
-      source.resolved_topic_name.c_str());
-  } else if (source.state == DataSourceState::TimeStampOutOfRange) {
-    ImPlot::AnnotateClamped(
-      warn_x_pos, warn_y_pos, warn_offset, warning_color,
-      "WARNING [%s]: all samples are outside of the x range; if you are using sim time set use_sim_time:=true when launching quickplot",
-      source.resolved_topic_name.c_str());
-  } else if (source.state == DataSourceState::MessageTypeUnavailable) {
-    ImPlot::AnnotateClamped(
-      warn_x_pos, warn_y_pos, warn_offset, warning_color,
-      "WARNING [%s]: failed to load message type",
-      source.resolved_topic_name.c_str());
-  } else if (source.state == DataSourceState::InvalidMember) {
-    auto invalid_member_path = boost::algorithm::join(source.config.member_path, ".");
-    ImPlot::AnnotateClamped(
-      warn_x_pos, warn_y_pos, warn_offset, warning_color, "WARNING [%s]: invalid message member [%s]",
-      source.resolved_topic_name.c_str(), invalid_member_path.c_str());
-  }
+
+  auto text = get_state_message(source.state);
+  ImPlot::AnnotateClamped(
+    warn_x_pos, warn_y_pos, warn_offset, warning_color, "[%s]: %s",
+    source.resolved_topic_name.c_str(), text);
 }
 
 void EndPlotView()

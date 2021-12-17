@@ -229,7 +229,7 @@ public:
 
             if (GImGui->HoveredIdTimer > 0.5) {
               ImGui::BeginTooltip();
-              ImGui::Text("add %s to plot 0", member_formatted.c_str());
+              ImGui::Text("add %s to plot0", member_formatted.c_str());
               ImGui::Text("or drag and drop on plot of choice");
               ImGui::EndTooltip();
             }
