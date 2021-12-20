@@ -28,21 +28,13 @@ constexpr float HOVER_TOOLTIP_DEBOUNCE = 0.4;
 struct MemberPayload
 {
   const char * topic_name;
-  size_t member_index;
+  MemberPath member;
 };
 
-inline std::string source_id(const DataSource & source)
-{
-  std::stringstream ss;
-  ss << source.resolved_topic_name << "/";
-  for (size_t i = 0; i < source.config.member_path.size(); i++) {
-    ss << source.config.member_path[i];
-    if (i + 1 < source.config.member_path.size()) {
-      ss << ".";
-    }
-  }
-  return ss.str();
-}
+template<class ... Ts>
+struct overloaded : Ts ... { using Ts::operator() ...; };
+template<class ... Ts>
+overloaded(Ts ...)->overloaded<Ts...>;
 
 class Application
 {
@@ -104,19 +96,28 @@ public:
     plots_.clear();
     std::transform(
       config.plots.begin(), config.plots.end(), std::back_inserter(plots_),
-      [](const auto & plot_config) {
+      [this](const auto & plot_config) {
         Plot p;
         int max_axis = 0;
-        for (const auto & s : plot_config.sources) {
-          auto & new_s = p.sources.emplace_back();
-          new_s.config = s;
-          new_s.state = DataSourceState::Uninitialized;
-          if (s.axis > max_axis) {
-            max_axis = s.axis;
+        for (const auto & in_source : plot_config.sources) {
+          auto & [new_source, new_axis] = p.sources.emplace_back();
+          new_axis = in_source.axis;
+
+          new_source.resolved_topic_name = node_->get_node_topics_interface()->resolve_topic_name(
+            in_source.topic_name);
+          new_source.id = source_id(new_source.resolved_topic_name, in_source.member_path);
+          new_source.info = SourceDescriptor {
+            .error = DataSourceError::None,
+            .member_path = in_source.member_path,
+          };
+
+          if (in_source.axis > max_axis) {
+            max_axis = in_source.axis;
           }
         }
         p.axes = plot_config.axes;
-        p.axes.resize(static_cast<size_t>(max_axis + 1), AxisConfig {
+        p.axes.resize(
+          static_cast<size_t>(max_axis + 1), AxisConfig {
           .y_min = -1.0,
           .y_max = 1.0,
         });
@@ -133,8 +134,17 @@ public:
     std::transform(
       plots_.begin(), plots_.end(), std::back_inserter(config.plots), [](const auto & plot) {
         PlotConfig p;
-        for (const auto & s : plot.sources) {
-          p.sources.insert(s.config);
+        for (const auto & [source, axis] : plot.sources) {
+
+          auto active = std::get_if<ActiveDataSource>(&source.info);
+          if (active) {
+            p.sources.insert(
+              DataSourceConfig {
+              .topic_name = source.resolved_topic_name,
+              .member_path = member_path_as_strvec(active->member),
+              .axis = axis
+            });
+          }
         }
         p.axes = plot.axes;
         return p;
@@ -161,26 +171,26 @@ public:
   void initialize_pending_sources()
   {
     for (auto & plot : plots_) {
-      for (auto & source : plot.sources) {
-        if (source.state == DataSourceState::Uninitialized) {
-          auto resolved_topic = node_->get_node_topics_interface()->resolve_topic_name(
-            source.config.topic_name);
-          source.resolved_topic_name = resolved_topic;
-          source.id = source_id(source);
-          auto type_it = available_topics_to_types_.find(resolved_topic);
+      for (auto & [source, _] : plot.sources) {
+
+        auto descriptor = std::get_if<SourceDescriptor>(&source.info);
+        if (descriptor && descriptor->error == DataSourceError::None) {
+          auto type_it = available_topics_to_types_.find(source.resolved_topic_name);
           if (type_it != available_topics_to_types_.end()) {
             // if type is known, initialize and set ready state
-            const auto & itsp_it = message_type_to_introspection_.find(type_it->second);
+            auto itsp_it = message_type_to_introspection_.find(type_it->second);
             if (itsp_it != message_type_to_introspection_.end()) {
-              MessageMember member;
-              auto member_info_opt = itsp_it->second->get_member_info(source.config.member_path);
+              auto member_info_opt = itsp_it->second->get_member(descriptor->member_path);
               if (member_info_opt.has_value()) {
-                member.path = source.config.member_path;
-                member.info = member_info_opt.value();
-                node_->add_topic_field(resolved_topic, itsp_it->second, member);
-                source.state = DataSourceState::Ok;
+                node_->add_topic_field(
+                  source.resolved_topic_name, itsp_it->second,
+                  member_info_opt.value());
+                source.info = ActiveDataSource {
+                  .warning = DataWarning::None,
+                  .member = member_info_opt.value(),
+                };
               } else {
-                source.state = DataSourceState::InvalidMember;
+                descriptor->error = DataSourceError::InvalidMember;
               }
             }
             // if type is not known, we leave the source at initialized, and the GUI should show
@@ -218,28 +228,30 @@ public:
         auto introspection = message_type_to_introspection_.at(type);
         size_t i {0};
         for (const auto & member : introspection->members()) {
-          std::string member_formatted = boost::algorithm::join(member.path, ".");
-          ImGui::Selectable(member_formatted.c_str(), false);
-          MemberPayload payload {
-            .topic_name = topic.c_str(),
-            .member_index = i,
-          };
-          if (ImGui::IsItemHovered()) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+          if (is_numeric(member.back()->type_id_)) {
+            std::string member_formatted = fmt_member_path(member);
+            ImGui::Selectable(member_formatted.c_str(), false);
+            MemberPayload payload {
+              .topic_name = topic.c_str(),
+              .member = member,
+            };
+            if (ImGui::IsItemHovered()) {
+              ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
-            if (GImGui->HoveredIdTimer > 0.5) {
-              ImGui::BeginTooltip();
-              ImGui::Text("add %s to plot0", member_formatted.c_str());
-              ImGui::Text("or drag and drop on plot of choice");
-              ImGui::EndTooltip();
+              if (GImGui->HoveredIdTimer > 0.5) {
+                ImGui::BeginTooltip();
+                ImGui::Text("add %s to plot0", member_formatted.c_str());
+                ImGui::Text("or drag and drop on plot of choice");
+                ImGui::EndTooltip();
+              }
+              if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                add_topic_field_to_plot(payload);
+              }
             }
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-              add_topic_field_to_plot(payload);
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+              ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
+              ImGui::EndDragDropSource();
             }
-          }
-          if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-            ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
-            ImGui::EndDragDropSource();
           }
           ++i;
         }
@@ -266,12 +278,12 @@ public:
     ImGui::TreePop();
   }
 
-  void set_source_states(const std::string & resolved_topic_name, DataSourceState state)
+  void set_source_warning(const std::string & resolved_topic_name, DataWarning warning)
   {
     for (auto & plot : plots_) {
-      for (auto & source : plot.sources) {
+      for (auto & [source, _] : plot.sources) {
         if (source.resolved_topic_name == resolved_topic_name) {
-          source.state = state;
+          std::get<ActiveDataSource>(source.info).warning = warning;
         }
       }
     }
@@ -283,7 +295,7 @@ public:
       auto topics_and_types = node_->get_topic_names_and_types();
       for (const auto & [topic, types] : topics_and_types) {
         if (types.size() != 1) {
-          std::cerr << "topic " << topic << " has multiple types, quickplot will ignore it" <<
+          std::cerr << "topic " << topic << " has multiple types and will be ignored" <<
             std::endl;
           continue;
         }
@@ -340,9 +352,9 @@ public:
             });
         }
         if (clock_issue_likely) {
-          set_source_states(topic, DataSourceState::TimeStampOutOfRange);
+          set_source_warning(topic, DataWarning::TimeStampOutOfRange);
         } else if (clock_issue_disproven) {
-          set_source_states(topic, DataSourceState::Ok);
+          set_source_warning(topic, DataWarning::None);
         }
       }
     }
@@ -445,24 +457,34 @@ public:
 
           for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot_it->axes.size()); a++) {
             for (auto source_it = plot_it->sources.begin(); source_it != plot_it->sources.end(); ) {
-              auto & source = *source_it;
-              if (source.config.axis != a) {
+              auto axis = source_it->second;
+              if (axis != a) {
                 // ensure source occurs in this plot axis
                 ++source_it;
                 continue;
               }
+              const auto & source = source_it->first;
 
               // set axis just before matching source was found, to ensure axis is only displayed
               // if corresponding source exists
               ImPlot::SetPlotYAxis(a);
-              if (source.state == DataSourceState::Ok) {
-                std::unique_lock<std::mutex> lock(node_->topic_mutex);
-                auto it = node_->topics_to_subscriptions.find(source.resolved_topic_name);
-                rcpputils::require_true(it != node_->topics_to_subscriptions.end());
-                PlotSource(source, it->second.get_buffer(source.config.member_path).data());
-              } else {
-                PlotSourceError(source, plot_opts);
-              }
+
+              std::visit(
+                overloaded {
+                  [this, source, &plot_opts](const ActiveDataSource & active) {
+                    if (active.warning == DataWarning::None) {
+                      std::unique_lock<std::mutex> lock(node_->topic_mutex);
+                      auto it = node_->topics_to_subscriptions.find(source.resolved_topic_name);
+                      rcpputils::require_true(it != node_->topics_to_subscriptions.end());
+                      PlotSource(source, it->second.get_buffer(active.member).data());
+                    } else {
+                      PlotSourceError(source, get_warning_message(active.warning), plot_opts);
+                    }
+                  },
+                  [source, &plot_opts](const SourceDescriptor & descriptor) {
+                    PlotSourceError(source, get_error_message(descriptor.error), plot_opts);
+                  }
+                }, source.info);
 
               if (PlotSourcePopup(source)) {
                 source_it = plot_it->sources.erase(source_it);
@@ -478,14 +500,6 @@ public:
           }
 
           if (ImPlot::BeginDragDropTarget()) {
-            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-              auto topic_name = std::string(static_cast<char *>(payload->Data));
-              MemberPayload member_payload {
-                .topic_name = topic_name.c_str(),
-                .member_index = 1,
-              };
-              accept_member_payload(*plot_it, ImPlotYAxis_1, &member_payload);
-            }
             if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
               accept_member_payload(
                 *plot_it, ImPlotYAxis_1,
@@ -495,14 +509,6 @@ public:
           }
           for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2}) {
             if (ImPlot::BeginDragDropTargetY(axis)) {
-              if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_name")) {
-                auto topic_name = std::string(static_cast<char *>(payload->Data));
-                MemberPayload member_payload {
-                  .topic_name = topic_name.c_str(),
-                  .member_index = 1,
-                };
-                accept_member_payload(*plot_it, axis, &member_payload);
-              }
               if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
                 accept_member_payload(
                   *plot_it, axis,
@@ -540,29 +546,26 @@ public:
   {
     auto message_type = available_topics_to_types_.at(payload->topic_name);
     auto introspection = message_type_to_introspection_.at(message_type);
-    auto member_infos = introspection->members().begin();
-    std::advance(member_infos, payload->member_index);
-    node_->add_topic_field(payload->topic_name, introspection, *member_infos);
+    node_->add_topic_field(payload->topic_name, introspection, payload->member);
 
-    DataSourceConfig source_config;
-    source_config.topic_name = payload->topic_name;
-    source_config.member_path = member_infos->path;
-    source_config.axis = axis;
-
+    auto id = source_id(payload->topic_name, payload->member);
     auto it = std::find_if(
-      plot.sources.begin(), plot.sources.end(), [&source_config](const auto & src) {
-        return src.config == source_config;
+      plot.sources.begin(), plot.sources.end(), [&id](const auto & item) {
+        return item.first.id == id;
       });
     if (it != plot.sources.end()) {
       // ensure the same source config is not added twice
       return;
     }
-    auto & source = plot.sources.emplace_back();
+    auto & [source, new_axis] = plot.sources.emplace_back();
+    new_axis = axis;
     source.resolved_topic_name = payload->topic_name;
     // assume the state is Ok, since the topic was drag-dropped from the available list
-    source.state = DataSourceState::Ok;
-    source.config = source_config;
-    source.id = source_id(source);
+    source.info = ActiveDataSource {
+      .warning = DataWarning::None,
+      .member = payload->member,
+    };
+    source.id = id;
 
     while (static_cast<size_t>(axis + 1) > plot.axes.size()) {
       auto & new_axis = plot.axes.emplace_back();

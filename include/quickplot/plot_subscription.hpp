@@ -150,7 +150,7 @@ public:
   // Using list instead of vector, since the emplace_back operation does not require
   // the element to be MoveConstructible for resizing the array. The data buffer should
   // not be move constructed.
-  std::list<std::pair<MessageMember, PlotDataBuffer>> buffers_;
+  std::list<std::pair<MemberPath, PlotDataBuffer>> buffers_;
 
   explicit PlotSubscription(
     std::string topic_name,
@@ -178,11 +178,11 @@ public:
   // disable copy and move
   PlotSubscription & operator=(PlotSubscription && other) = delete;
 
-  void add_field(MessageMember in_member, size_t capacity)
+  void add_field(MemberPath in_member, size_t capacity)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
     for (auto & [member, buffer] : buffers_) {
-      if (member.path == in_member.path) {
+      if (member == in_member) {
         std::invalid_argument("member already in subscription");
       }
     }
@@ -192,15 +192,15 @@ public:
     );
   }
 
-  PlotDataBuffer & get_buffer(std::vector<std::string> member_path)
+  PlotDataBuffer & get_buffer(MemberPath member)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
-    for (auto & [member, buffer] : buffers_) {
-      if (member.path == member_path) {
+    for (auto & [it_member, buffer] : buffers_) {
+      if (it_member == member) {
         return buffer;
       }
     }
-    throw std::invalid_argument("member not found by path");
+    throw std::invalid_argument("member not found");
   }
 
   StatisticData receive_period_stats() const
@@ -227,7 +227,7 @@ public:
     {
       std::unique_lock<std::mutex> lock(buffers_mutex_);
       for (auto & [member, buffer] : buffers_) {
-        double value = deserializer_->get_numeric(message_buffer_.data(), member.info);
+        double value = get_numeric(message_buffer_.data(), member);
         buffer.push(t.seconds(), value);
       }
     }

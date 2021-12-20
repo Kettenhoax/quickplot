@@ -3,6 +3,7 @@
 #include "imgui_impl_opengl3.h" // NOLINT
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <algorithm>
 #include <string>
 #include <memory>
 #include <utility>
@@ -39,11 +40,13 @@ int main(int argc, char ** argv)
     });
 
   fs::path config_file;
+  bool using_default_config_file = false;
   if (non_ros_args.size() > 1) {
     // non ROS arguments after the program name are interpreted as config file paths
     config_file = non_ros_args[1];
   } else {
     config_file = quickplot::get_default_config_path();
+    using_default_config_file = true;
   }
 
   quickplot::ApplicationConfig config;
@@ -72,7 +75,8 @@ int main(int argc, char ** argv)
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
   glfwWindowHint(GLFW_SAMPLES, 8);
 
-  GLFWwindow * window = glfwCreateWindow(1280, 480 * config.plots.size(), "quickplot", NULL, NULL);
+  int plot_height = std::max(1, static_cast<int>(config.plots.size()));
+  GLFWwindow * window = glfwCreateWindow(1280, 480 * plot_height, "quickplot", NULL, NULL);
   if (window == NULL) {
     return EXIT_FAILURE;
   }
@@ -210,7 +214,9 @@ int main(int argc, char ** argv)
   if (config_file.has_parent_path()) {
     fs::create_directories(config_file.parent_path());
   }
-  quickplot::save_config(app.get_config(), config_file);
+  if (using_default_config_file) {
+    quickplot::save_config(app.get_config(), config_file);
+  }
 
   ros_thread.join();
   return EXIT_SUCCESS;

@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <set>
+#include <utility>
 #include <unordered_set>
 #include <boost/algorithm/string/join.hpp>
 #include <rclcpp/time.hpp>
@@ -12,28 +13,44 @@
 namespace quickplot
 {
 
-enum class DataSourceState
+enum class DataSourceError
 {
-  Ok = 0,
-  Uninitialized = 1,
+  None = 0,
   // the message type behind the data source is not available on the system running the plot tool
   MessageTypeUnavailable,
-  // the timestamps in the last received messages were out of range
-  TimeStampOutOfRange,
   // the data source requests a member that is not part of the message type
   InvalidMember,
 };
 
+enum class DataWarning
+{
+  None = 0,
+  // the timestamps in the last received messages were out of range
+  TimeStampOutOfRange = 1,
+};
+
+struct SourceDescriptor
+{
+  DataSourceError error;
+  std::vector<std::string> member_path;
+};
+
+struct ActiveDataSource
+{
+  DataWarning warning;
+  // resolved introspection member path
+  MemberPath member;
+};
+
 struct DataSource
 {
-  DataSourceConfig config;
-  DataSourceState state;
   std::string id;
   std::string resolved_topic_name;
+  std::variant<SourceDescriptor, ActiveDataSource> info;
 
   inline bool operator==(const DataSource & other) const
   {
-    return config == other.config;
+    return id == other.id;
   }
 };
 
@@ -46,7 +63,7 @@ struct hash<quickplot::DataSource>
 {
   inline size_t operator()(const quickplot::DataSource & source) const
   {
-    return hash<std::string>().operator()(source.config.topic_name);
+    return hash<std::string>().operator()(source.resolved_topic_name);
   }
 };
 } // namespace std
@@ -56,7 +73,8 @@ namespace quickplot
 
 struct Plot
 {
-  std::vector<DataSource> sources;
+  // source and axis
+  std::vector<std::pair<DataSource, int>> sources;
   std::vector<AxisConfig> axes;
 };
 
@@ -73,11 +91,13 @@ ImPlotPoint circular_buffer_access(void * data, int idx)
   return buffer->operator[](idx);
 }
 
-struct PlotViewResult {
+struct PlotViewResult
+{
   bool displayed;
   float time_scale_delta;
 
-  PlotViewResult() : displayed(false), time_scale_delta(0.0f) {}
+  PlotViewResult()
+  : displayed(false), time_scale_delta(0.0f) {}
 };
 
 PlotViewResult PlotView(const char * id, Plot & plot, const PlotViewOptions & options)
@@ -166,28 +186,37 @@ void PlotSource(const DataSource & source, const PlotDataContainer & data)
     item_count);
 }
 
-static const char* UninitializedText = "data not received yet";
-static const char* TimeStampOutOfRangeText = "all samples are outside of the x range; if you are using sim time set use_sim_time:=true when launching quickplot";
-static const char* MessageTypeUnavailableText = "failed to load message type";
-static const char* InvalidMemberText = "invalid message member";
+static const char * UninitializedText = "data not received yet";
+static const char * MessageTypeUnavailableText = "failed to load message type";
+static const char * InvalidMemberText = "invalid message member";
+static const char * TimeStampOutOfRangeText =
+  "all samples are outside of the x range; if you are using sim time set use_sim_time:=true when launching quickplot";
 
-const char* get_state_message(DataSourceState state) {
-  if (state == DataSourceState::Uninitialized) {
+const char * get_error_message(DataSourceError error)
+{
+  if (error == DataSourceError::None) {
     return UninitializedText;
   }
-  if (state == DataSourceState::TimeStampOutOfRange) {
-    return TimeStampOutOfRangeText;
-  }
-  if (state == DataSourceState::MessageTypeUnavailable) {
+  if (error == DataSourceError::MessageTypeUnavailable) {
     return MessageTypeUnavailableText;
   }
-  if (state == DataSourceState::InvalidMember) {
+  if (error == DataSourceError::InvalidMember) {
     return InvalidMemberText;
   }
   return nullptr;
 }
 
-void PlotSourceError(const DataSource & source, const PlotViewOptions & plot_opts)
+const char * get_warning_message(DataWarning warning)
+{
+  if (warning == DataWarning::TimeStampOutOfRange) {
+    return TimeStampOutOfRangeText;
+  }
+  return nullptr;
+}
+
+void PlotSourceError(
+  const DataSource & source, const char * message,
+  const PlotViewOptions & plot_opts)
 {
   // plot empty line to show the item in legend, even though it is not received yet
   // this allows the user to remove the source from the list
@@ -202,10 +231,9 @@ void PlotSourceError(const DataSource & source, const PlotViewOptions & plot_opt
   auto warn_y_pos = 0.5;
   auto warn_offset = ImVec2(0, 0);
 
-  auto text = get_state_message(source.state);
   ImPlot::AnnotateClamped(
     warn_x_pos, warn_y_pos, warn_offset, warning_color, "[%s]: %s",
-    source.resolved_topic_name.c_str(), text);
+    source.resolved_topic_name.c_str(), message);
 }
 
 void EndPlotView()

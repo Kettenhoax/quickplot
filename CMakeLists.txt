@@ -17,17 +17,20 @@ find_package(Boost REQUIRED COMPONENTS system)
 find_package(ament_cmake REQUIRED)
 find_package(implot_vendor REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcpputils REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rosidl_typesupport_cpp REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 
 add_library(quickplot
+  src/introspection.cpp
   src/message_parser.cpp
   src/config.cpp)
 target_include_directories(quickplot PUBLIC include)
 ament_target_dependencies(quickplot
   rclcpp
+  rcpputils
   yaml_cpp_vendor
   std_msgs
   rosidl_typesupport_cpp
@@ -53,9 +56,15 @@ if(BUILD_TESTING)
   find_package(geometry_msgs REQUIRED)
   find_package(nav_msgs REQUIRED)
 
-  ament_add_gmock(test_parser test/test_parser.cpp)
-  target_link_libraries(test_parser quickplot)
-  ament_target_dependencies(test_parser
+  ament_add_gmock(test_introspection test/test_introspection.cpp)
+  target_link_libraries(test_introspection quickplot)
+  ament_target_dependencies(test_introspection
+    rclcpp
+    rosidl_typesupport_introspection_cpp)
+
+  ament_add_gmock(test_message_parser test/test_message_parser.cpp)
+  target_link_libraries(test_message_parser quickplot)
+  ament_target_dependencies(test_message_parser
     rclcpp
     rosidl_typesupport_cpp
     rosidl_typesupport_introspection_cpp
