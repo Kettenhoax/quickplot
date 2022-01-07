@@ -22,15 +22,19 @@ using libstatistics_collector::moving_average_statistics::StatisticData;
 
 class PlotDataBuffer;
 
-// Mutex-protected access to an immutable random-access-iterator of plot data
+/**
+ * Immutable random-access-iterator of plot data.
+ * This class is made thread-safe by locking the parent container during its entire lifetime.
+ */
 class PlotDataContainer
 {
 private:
-  const PlotDataBuffer* parent_;
+  const PlotDataBuffer * parent_;
+  // optional to allow for empty containers
   std::optional<std::unique_lock<std::mutex>> lock_;
 
 public:
-  explicit PlotDataContainer(const PlotDataBuffer* parent);
+  explicit PlotDataContainer(const PlotDataBuffer * parent);
 
   PlotDataContainer();
 
@@ -41,7 +45,7 @@ public:
   CircularBuffer::const_iterator end() const;
 };
 
-// Provide mutex-protected access to a circular buffer of ImPlotPoint
+// Circular buffer of ImPlotPoint
 class PlotDataBuffer
 {
   friend class PlotDataContainer;
@@ -50,6 +54,7 @@ private:
   // lock this mutex when accessing data from the plot buffer
   mutable std::mutex mutex_;
   CircularBuffer data_;
+  std::weak_ptr<PlotDataContainer> active_container_;
 
 public:
   explicit PlotDataBuffer(size_t capacity)
@@ -58,9 +63,14 @@ public:
 
   }
 
-  PlotDataContainer data() const
+  std::shared_ptr<PlotDataContainer> data()
   {
-    return PlotDataContainer(this);
+    if (!active_container_.expired()) {
+      throw std::runtime_error("only one PlotDataContainer can reference this buffer at a time");
+    }
+    auto container = std::make_shared<PlotDataContainer>(this);
+    active_container_ = container;
+    return container;
   }
 
   bool empty() const
@@ -101,13 +111,15 @@ public:
   }
 };
 
-PlotDataContainer::PlotDataContainer(const PlotDataBuffer* parent)
+PlotDataContainer::PlotDataContainer(const PlotDataBuffer * parent)
 : parent_(parent), lock_(parent_->mutex_)
 {
 
 }
 
-PlotDataContainer::PlotDataContainer() : parent_(nullptr), lock_() {
+PlotDataContainer::PlotDataContainer()
+: parent_(nullptr), lock_()
+{
 
 }
 
@@ -144,14 +156,14 @@ private:
   // protect access to list of buffers
   mutable std::mutex buffers_mutex_;
 
-public:
   // One data buffer per plotted member of a message.
   //
   // Using list instead of vector, since the emplace_back operation does not require
   // the element to be MoveConstructible for resizing the array. The data buffer should
   // not be move constructed.
-  std::list<std::pair<MemberSequencePath, PlotDataBuffer>> buffers_;
+  std::list<std::pair<MemberSequencePath, std::weak_ptr<PlotDataBuffer>>> buffers_;
 
+public:
   explicit PlotSubscription(
     std::string topic_name,
     rclcpp::node_interfaces::NodeTopicsInterface::SharedPtr topics_interface,
@@ -178,7 +190,11 @@ public:
   // disable copy and move
   PlotSubscription & operator=(PlotSubscription && other) = delete;
 
-  void add_field(MemberSequencePath in_member, size_t capacity)
+  std::string topic_name() const {
+    return subscription_->get_topic_name();
+  }
+
+  std::shared_ptr<PlotDataBuffer> add_source(MemberSequencePath in_member)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
     for (auto & [member, buffer] : buffers_) {
@@ -186,21 +202,9 @@ public:
         std::invalid_argument("member already in subscription");
       }
     }
-    buffers_.emplace_back(
-      in_member,
-      capacity
-    );
-  }
-
-  PlotDataBuffer & get_buffer(MemberSequencePath member)
-  {
-    std::unique_lock<std::mutex> lock(buffers_mutex_);
-    for (auto & [it_member, buffer] : buffers_) {
-      if (it_member == member) {
-        return buffer;
-      }
-    }
-    throw std::invalid_argument("member not found");
+    auto buffer = std::make_shared<PlotDataBuffer>(1);
+    buffers_.emplace_back(in_member, buffer);
+    return buffer;
   }
 
   StatisticData receive_period_stats() const
@@ -226,18 +230,32 @@ public:
     }
     {
       std::unique_lock<std::mutex> lock(buffers_mutex_);
-      for (auto & [member, buffer] : buffers_) {
-        double value = get_nested_numeric(message_buffer_.data(), member);
-        buffer.push(t.seconds(), value);
+      auto it = buffers_.begin();
+      while (it != buffers_.end()) {
+        auto buffer = it->second.lock();
+        if (buffer) {
+          double value = get_nested_numeric(message_buffer_.data(), it->first);
+          buffer->push(t.seconds(), value);
+          ++it;
+        } else {
+          it = buffers_.erase(it);
+        }
       }
     }
   }
 
-  void clear_all_data()
+  void clear()
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
-    for (auto & [_, buffer] : buffers_) {
-      buffer.clear();
+    auto it = buffers_.begin();
+    while (it != buffers_.end()) {
+      auto buffer = it->second.lock();
+      if (buffer) {
+        buffer->clear();
+        ++it;
+      } else {
+        it = buffers_.erase(it);
+      }
     }
   }
 };

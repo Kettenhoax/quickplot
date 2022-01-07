@@ -13,6 +13,12 @@
 namespace quickplot
 {
 
+// helper for variant visit
+template<class ... Ts>
+struct overloaded : Ts ... { using Ts::operator() ...; };
+template<class ... Ts>
+overloaded(Ts ...)->overloaded<Ts...>;
+
 enum class DataSourceError
 {
   None = 0,
@@ -31,6 +37,7 @@ enum class DataWarning
 
 struct SourceDescriptor
 {
+  std::string resolved_topic_name;
   DataSourceError error;
   MemberSequencePathDescriptor member_path;
 };
@@ -38,15 +45,34 @@ struct SourceDescriptor
 struct ActiveDataSource
 {
   DataWarning warning;
-  // resolved introspection member path
+
+  // pointer to subscription which fills the buffer
+  std::shared_ptr<PlotSubscription> subscription;
+
+  // resolved member path of topic type
   MemberSequencePath member;
+
+  // buffer to time series
+  std::shared_ptr<PlotDataBuffer> data;
 };
 
 struct DataSource
 {
   std::string id;
-  std::string resolved_topic_name;
-  std::variant<SourceDescriptor, ActiveDataSource> info;
+  std::variant<SourceDescriptor, ActiveDataSource> source;
+
+  std::string topic_name() const
+  {
+    return std::visit(
+      overloaded {
+        [this](const ActiveDataSource & active) {
+          return active.subscription->topic_name();
+        },
+        [this](const SourceDescriptor & descriptor) {
+          return descriptor.resolved_topic_name;
+        }
+      }, source);
+  }
 
   inline bool operator==(const DataSource & other) const
   {
@@ -63,7 +89,7 @@ struct hash<quickplot::DataSource>
 {
   inline size_t operator()(const quickplot::DataSource & source) const
   {
-    return hash<std::string>().operator()(source.resolved_topic_name);
+    return hash<std::string>().operator()(source.topic_name());
   }
 };
 } // namespace std
@@ -85,7 +111,7 @@ struct PlotViewOptions
   rclcpp::Time t_end;
 };
 
-ImPlotPoint circular_buffer_access(void * data, int idx)
+ImPlotPoint circular_buffer_get_item(void * data, int idx)
 {
   auto buffer = static_cast<CircularBuffer::const_iterator *>(data);
   return buffer->operator[](idx);
@@ -178,12 +204,11 @@ void PlotSource(const DataSource & source, const PlotDataContainer & data)
 {
   ImPlot::HideNextItem(false, ImGuiCond_Always);
   auto it = data.begin();
-  size_t item_count = data.size();
   ImPlot::PlotLineG(
     source.id.c_str(),
-    &circular_buffer_access,
+    &circular_buffer_get_item,
     &it,
-    item_count);
+    data.size());
 }
 
 static const char * UninitializedText = "data not received yet";
@@ -233,7 +258,7 @@ void PlotSourceError(
 
   ImPlot::AnnotateClamped(
     warn_x_pos, warn_y_pos, warn_offset, warning_color, "[%s]: %s",
-    source.resolved_topic_name.c_str(), message);
+    source.topic_name().c_str(), message);
 }
 
 void EndPlotView()

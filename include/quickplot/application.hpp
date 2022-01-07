@@ -6,6 +6,7 @@
 #include <map>
 #include <list>
 #include <vector>
+#include <set>
 #include <unordered_set>
 #include <unordered_map>
 #include <imgui_internal.h>
@@ -30,11 +31,6 @@ struct MemberPayload
   const char * topic_name;
   MemberSequencePath member;
 };
-
-template<class ... Ts>
-struct overloaded : Ts ... { using Ts::operator() ...; };
-template<class ... Ts>
-overloaded(Ts ...)->overloaded<Ts...>;
 
 class Application
 {
@@ -88,7 +84,7 @@ public:
       std::cerr << "time jump by a delta of " << time_jump.delta.nanoseconds << "ns";
     }
     std::cerr << ", clearing all data" << std::endl;
-    clear_data();
+    clear();
   }
 
   void apply_config(ApplicationConfig config)
@@ -103,10 +99,11 @@ public:
           auto & [new_source, new_axis] = p.sources.emplace_back();
           new_axis = in_source.axis;
 
-          new_source.resolved_topic_name = node_->get_node_topics_interface()->resolve_topic_name(
-            in_source.topic_name);
-          new_source.id = source_id(new_source.resolved_topic_name, in_source.member_path);
-          new_source.info = SourceDescriptor {
+          auto resolved_topic_name =
+          node_->get_node_topics_interface()->resolve_topic_name(in_source.topic_name);
+          new_source.id = source_id(resolved_topic_name, in_source.member_path);
+          new_source.source = SourceDescriptor {
+            .resolved_topic_name = resolved_topic_name,
             .error = DataSourceError::None,
             .member_path = in_source.member_path,
           };
@@ -135,12 +132,11 @@ public:
       plots_.begin(), plots_.end(), std::back_inserter(config.plots), [](const auto & plot) {
         PlotConfig p;
         for (const auto & [source, axis] : plot.sources) {
-
-          auto active = std::get_if<ActiveDataSource>(&source.info);
+          auto active = std::get_if<ActiveDataSource>(&source.source);
           if (active) {
             p.sources.insert(
               DataSourceConfig {
-              .topic_name = source.resolved_topic_name,
+              .topic_name = active->subscription->topic_name(),
               .member_path = to_descriptor(active->member),
               .axis = axis
             });
@@ -172,23 +168,26 @@ public:
   {
     for (auto & plot : plots_) {
       for (auto & [source, _] : plot.sources) {
-        auto descriptor = std::get_if<SourceDescriptor>(&source.info);
+        auto descriptor = std::get_if<SourceDescriptor>(&source.source);
         if (descriptor && descriptor->error == DataSourceError::None) {
-          auto type_it = available_topics_to_types_.find(source.resolved_topic_name);
+          auto topic = source.topic_name();
+          auto type_it = available_topics_to_types_.find(topic);
           if (type_it != available_topics_to_types_.end()) {
             // if type is known, initialize and set ready state
             auto itsp_it = message_type_to_introspection_.find(type_it->second);
             if (itsp_it != message_type_to_introspection_.end()) {
               try {
-                auto member_info_opt = itsp_it->second->get_member_sequence_path(
+                auto member_opt = itsp_it->second->get_member_sequence_path(
                   descriptor->member_path);
-                if (member_info_opt.has_value()) {
-                  node_->add_topic_field(
-                    source.resolved_topic_name, itsp_it->second,
-                    member_info_opt.value());
-                  source.info = ActiveDataSource {
+                if (member_opt.has_value()) {
+                  auto subscription = node_->get_or_create_subscription(topic, itsp_it->second);
+                  auto member = member_opt.value();
+                  auto buffer = subscription->add_source(member);
+                  source.source = ActiveDataSource {
                     .warning = DataWarning::None,
-                    .member = member_info_opt.value(),
+                    .subscription = subscription,
+                    .member = member,
+                    .data = buffer,
                   };
                 } else {
                   descriptor->error = DataSourceError::InvalidMember;
@@ -284,17 +283,6 @@ public:
     ImGui::TreePop();
   }
 
-  void set_source_warning(const std::string & resolved_topic_name, DataWarning warning)
-  {
-    for (auto & plot : plots_) {
-      for (auto & [source, _] : plot.sources) {
-        if (source.resolved_topic_name == resolved_topic_name) {
-          std::get<ActiveDataSource>(source.info).warning = warning;
-        }
-      }
-    }
-  }
-
   void update_topics()
   {
     if (graph_event_->check_and_clear()) {
@@ -322,48 +310,45 @@ public:
     }
   }
 
-  void detect_clock_issues(const PlotViewOptions & plot_opts)
+  std::optional<DataWarning> prune_and_detect_clock_issues(
+    PlotDataBuffer & buffer,
+    const PlotViewOptions & plot_opts)
   {
-    std::unique_lock<std::mutex> lock(node_->topic_mutex);
     auto start_sec = plot_opts.t_start.seconds();
     auto end_sec = plot_opts.t_end.seconds();
-
-    for (auto & [topic, subscription] : node_->topics_to_subscriptions) {
-      for (auto & [_, buffer] : subscription.buffers_) {
-        //
-        // Check received data for clock mismatch issues.
-        //
-        // 1) The plotting tool uses the system clock, but data is published in ros clock.
-        //    In this case the data buffer would be cleared, because the plot start timestamp will be much larger than the last data timestamp
-        bool clock_issue_likely = false;
-        bool clock_issue_disproven = false;
-        bool had_data = !buffer.empty();
-        buffer.clear_data_up_to(plot_opts.t_start);
-        if (had_data) {
-          if (buffer.empty()) {
-            clock_issue_likely = buffer.empty();
-          } else {
-            clock_issue_disproven = true;
-          }
-        }
-
-        // 2) The plotting tool uses the ROS clock, but data is published with system time stamps
-        //    In this case all data would be outside the view window, with much larger timestamps, and slowly accumulate
-        if (!clock_issue_likely) {
-          auto data = buffer.data();
-          clock_issue_likely = std::all_of(
-            data.begin(), data.end(),
-            [start_sec, end_sec](const ImPlotPoint & item) {
-              return item.x < start_sec || item.x > end_sec;
-            });
-        }
-        if (clock_issue_likely) {
-          set_source_warning(topic, DataWarning::TimeStampOutOfRange);
-        } else if (clock_issue_disproven) {
-          set_source_warning(topic, DataWarning::None);
-        }
+    //
+    // Check received data for clock mismatch issues.
+    //
+    // 1) The plotting tool uses the system clock, but data is published in ros clock.
+    //    In this case the data buffer would be cleared, because the plot start timestamp will be much larger than the last data timestamp
+    bool clock_issue_likely = false;
+    bool clock_issue_disproven = false;
+    bool had_data = !buffer.empty();
+    buffer.clear_data_up_to(plot_opts.t_start);
+    if (had_data) {
+      if (buffer.empty()) {
+        clock_issue_likely = buffer.empty();
+      } else {
+        clock_issue_disproven = true;
       }
     }
+
+    // 2) The plotting tool uses the ROS clock, but data is published with system time stamps
+    //    In this case all data would be outside the view window, with much larger timestamps, and slowly accumulate
+    if (!clock_issue_likely) {
+      auto data = buffer.data();
+      clock_issue_likely = std::all_of(
+        data->begin(), data->end(),
+        [start_sec, end_sec](const ImPlotPoint & item) {
+          return item.x < start_sec || item.x > end_sec;
+        });
+    }
+    if (clock_issue_likely) {
+      return DataWarning::TimeStampOutOfRange;
+    } else if (clock_issue_disproven) {
+      return DataWarning::None;
+    }
+    return std::nullopt;
   }
 
   void update()
@@ -379,7 +364,19 @@ public:
       .t_start = t - history_dur,
       .t_end = t,
     };
-    detect_clock_issues(plot_opts);
+
+    // prune all data to time window of plot
+    for (auto & plot : plots_) {
+      for (auto & [source, _] : plot.sources) {
+        auto active = std::get_if<ActiveDataSource>(&source.source);
+        if (active) {
+          auto new_warning = prune_and_detect_clock_issues(*active->data, plot_opts);
+          if (new_warning.has_value()) {
+            active->warning = new_warning.value();
+          }
+        }
+      }
+    }
     PlotDock(plot_opts);
   }
 
@@ -387,16 +384,32 @@ public:
   {
     ImGuiWindowFlags list_window_flags = ImGuiWindowFlags_None;
     if (ImGui::Begin(TOPIC_LIST_WINDOW_ID, nullptr, list_window_flags)) {
-      if (!node_->topics_to_subscriptions.empty()) {
+      // accumulate and sort subscriptions of active plots
+      auto cmp_topic_names =
+        [](std::shared_ptr<PlotSubscription> s1, std::shared_ptr<PlotSubscription> s2) {
+          return s1->topic_name() < s2->topic_name();
+        };
+      std::set<std::shared_ptr<PlotSubscription>, decltype(cmp_topic_names)> active_topics(
+        cmp_topic_names);
+      for (auto & plot : plots_) {
+        for (auto & [source, _] : plot.sources) {
+            auto active = std::get_if<ActiveDataSource>(&source.source);
+            if (active) {
+              active_topics.insert(active->subscription);
+            }
+        }
+      }
+
+      // display list of subscribed topics and their receive stats
+      if (!active_topics.empty()) {
         if (ImGui::CollapsingHeader("active topics", ImGuiTreeNodeFlags_DefaultOpen)) {
-          for (const auto & [topic, subscription] : node_->topics_to_subscriptions) {
+          for (const auto & subscription : active_topics) {
+            auto type_it = available_topics_to_types_.find(subscription->topic_name());
             rcpputils::assert_true(
-              available_topics_to_types_.find(
-                topic) != available_topics_to_types_.end(),
+              type_it != available_topics_to_types_.end(),
               "topics can only become active when their type is known");
-            auto type = available_topics_to_types_[topic];
-            if (TopicEntry(topic, type)) {
-              auto stats = subscription.receive_period_stats();
+            if (TopicEntry(subscription->topic_name(), type_it->second)) {
+              auto stats = subscription->receive_period_stats();
               if (stats.standard_deviation < (stats.average / 10.0) && stats.average < 1.0 &&
                 stats.average > 0.001)
               {
@@ -407,28 +420,34 @@ public:
           }
         }
       }
+
+      // display filtered list of topics; include those that can't be subscribed with a warning
       if (ImGui::CollapsingHeader("available topics", ImGuiTreeNodeFlags_DefaultOpen)) {
         // according to https://design.ros2.org/articles/topic_and_service_names.html, max topic
         // name length is 256
         const size_t filter_text_length = 256 + 1;
-        static char filter_text[filter_text_length];
+        static char filter_text_raw[filter_text_length];
         ImGui::PushItemWidth(-1);
-        ImGui::InputTextWithHint("", "filter topic or type", filter_text, filter_text_length);
+        ImGui::InputTextWithHint("", "filter topic or type", filter_text_raw, filter_text_length);
         ImGui::PopItemWidth();
+
+        std::string filter_text(filter_text_raw);
 
         std::vector<std::pair<std::string, std::string>> shown_available_topics;
         size_t total_available = 0;
         for (const auto & [topic, type] : available_topics_to_types_) {
-          if (node_->topics_to_subscriptions.find(topic) != node_->topics_to_subscriptions.end()) {
+          if (node_->is_subscribed_to(topic)) {
+            // skip subscribed topics, those are already listed in the 'active topics' section
             continue;
           }
           ++total_available;
-          if (!strstr(topic.c_str(), filter_text)) {
+          if (topic.find(filter_text) == std::string::npos) {
             continue;
           }
           shown_available_topics.push_back({topic, type});
         }
 
+        // defer rendering the items up to this point, to print the number of shown topics before the topics
         if (filter_text[0] != '\0') {
           // if filter is passed, show amount of filtered topics
           ImGui::PushItemWidth(-1);
@@ -475,14 +494,13 @@ public:
               // if corresponding source exists
               ImPlot::SetPlotYAxis(a);
 
+              // display either data or detected errors related to the data
               std::visit(
                 overloaded {
                   [this, source, &plot_opts](const ActiveDataSource & active) {
                     if (active.warning == DataWarning::None) {
-                      std::unique_lock<std::mutex> lock(node_->topic_mutex);
-                      auto it = node_->topics_to_subscriptions.find(source.resolved_topic_name);
-                      rcpputils::require_true(it != node_->topics_to_subscriptions.end());
-                      PlotSource(source, it->second.get_buffer(active.member).data());
+                      auto data = active.data->data();
+                      PlotSource(source, *data);
                     } else {
                       PlotSourceError(source, get_warning_message(active.warning), plot_opts);
                     }
@@ -490,7 +508,7 @@ public:
                   [source, &plot_opts](const SourceDescriptor & descriptor) {
                     PlotSourceError(source, get_error_message(descriptor.error), plot_opts);
                   }
-                }, source.info);
+                }, source.source);
 
               if (PlotSourcePopup(source)) {
                 source_it = plot_it->sources.erase(source_it);
@@ -552,7 +570,8 @@ public:
   {
     auto message_type = available_topics_to_types_.at(payload->topic_name);
     auto introspection = message_type_to_introspection_.at(message_type);
-    node_->add_topic_field(payload->topic_name, introspection, payload->member);
+    auto subscription = node_->get_or_create_subscription(payload->topic_name, introspection);
+    auto buffer = subscription->add_source(payload->member);
 
     auto id = source_id(payload->topic_name, payload->member);
     auto it = std::find_if(
@@ -565,11 +584,12 @@ public:
     }
     auto & [source, new_axis] = plot.sources.emplace_back();
     new_axis = axis;
-    source.resolved_topic_name = payload->topic_name;
     // assume the state is Ok, since the topic was drag-dropped from the available list
-    source.info = ActiveDataSource {
+    source.source = ActiveDataSource {
       .warning = DataWarning::None,
+      .subscription = subscription,
       .member = payload->member,
+      .data = buffer,
     };
     source.id = id;
 
@@ -580,11 +600,9 @@ public:
     }
   }
 
-  void clear_data()
+  void clear()
   {
-    for (auto & [_, subscription]: node_->topics_to_subscriptions) {
-      subscription.clear_all_data();
-    }
+    node_->clear();
   }
 };
 
