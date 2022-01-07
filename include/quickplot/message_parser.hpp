@@ -27,7 +27,7 @@ public:
   explicit IntrospectionMessageDeserializer(std::shared_ptr<MessageIntrospection> introspection);
 
   // disable copy and move
-  IntrospectionMessageDeserializer & operator=(IntrospectionMessageDeserializer && other) = delete;
+  IntrospectionMessageDeserializer & operator=(IntrospectionMessageDeserializer &&) = delete;
 
   const char* message_type() const;
 

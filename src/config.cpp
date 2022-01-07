@@ -1,13 +1,15 @@
-#include <unistd.h>
-#include <sys/types.h>
-#include <pwd.h>
+#include <pwd.h> // for accessing home directory
 #include <unordered_set>
 #include <string>
-#include <iostream>
 #include <vector>
+#include <iostream>
+#include <sstream>
 #include <fstream>
+#include <charconv>
 #include <yaml-cpp/yaml.h>
+#include <rclcpp/rclcpp.hpp>
 #include "quickplot/config.hpp"
+#include "quickplot/introspection.hpp"
 
 namespace fs = std::filesystem;
 
@@ -40,30 +42,68 @@ struct convert<std::unordered_set<Value>>
 };
 
 template<>
+struct convert<quickplot::MemberSequencePathItemDescriptor>
+{
+  static Node encode(const quickplot::MemberSequencePathItemDescriptor & item)
+  {
+    Node node(NodeType::Scalar);
+    std::stringstream ss;
+    write_member_sequence_path_item_descriptor(ss, item);
+    node = ss.str();
+    return node;
+  }
+
+  static bool decode(const Node & node, quickplot::MemberSequencePathItemDescriptor & item)
+  {
+    auto in_str = node.as<std::string>();
+    auto first_bracket = in_str.find_first_of('[');
+    if (first_bracket == std::string::npos) {
+      item.member_name = in_str;
+      item.sequence_idx = std::nullopt;
+      return true;
+    }
+    auto last_bracket = in_str.find_first_of(']', first_bracket + 1);
+    if (last_bracket == std::string::npos || last_bracket + 1 != in_str.size()) {
+      return false;
+    }
+    size_t idx;
+    auto result = std::from_chars(
+      in_str.data() + first_bracket + 1,
+      in_str.data() + last_bracket, idx);
+    if (result.ec == std::errc::invalid_argument) {
+      return false;
+    }
+    item.member_name = in_str.substr(0, first_bracket);
+    item.sequence_idx = idx;
+    return true;
+  }
+};
+
+template<>
 struct convert<quickplot::DataSourceConfig>
 {
-  static Node encode(const quickplot::DataSourceConfig & s)
+  static Node encode(const quickplot::DataSourceConfig & config)
   {
     Node node;
-    node["topic_name"] = s.topic_name;
-    node["member_path"] = s.member_path;
-    if (s.axis != 0) {
-      node["axis"] = s.axis;
+    node["topic_name"] = config.topic_name;
+    node["member_path"] = config.member_path;
+    if (config.axis != 0) {
+      node["axis"] = config.axis;
     }
     return node;
   }
 
-  static bool decode(const Node & node, quickplot::DataSourceConfig & s)
+  static bool decode(const Node & node, quickplot::DataSourceConfig & config)
   {
-    s.topic_name = node["topic_name"].as<std::string>();
-    s.member_path = node["member_path"].as<std::vector<std::string>>();
+    config.topic_name = node["topic_name"].as<std::string>();
+    config.member_path = node["member_path"].as<quickplot::MemberSequencePathDescriptor>();
     if (node["axis"].IsDefined()) {
-      s.axis = node["axis"].as<int>();
-      if (s.axis < 0 || s.axis > 2) {
+      config.axis = node["axis"].as<int>();
+      if (config.axis < 0 || config.axis > 2) {
         return false;
       }
     } else {
-      s.axis = 0;
+      config.axis = 0;
     }
     return true;
   }
@@ -178,7 +218,6 @@ ApplicationConfig default_config()
 
 ApplicationConfig load_config(fs::path path)
 {
-  // TODO(ZeilingerM) validate topic and member names
   try {
     YAML::Node config = YAML::LoadFile(path.string());
     return config.as<ApplicationConfig>();

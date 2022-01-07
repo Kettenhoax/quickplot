@@ -28,7 +28,7 @@ constexpr float HOVER_TOOLTIP_DEBOUNCE = 0.4;
 struct MemberPayload
 {
   const char * topic_name;
-  MemberPath member;
+  MemberSequencePath member;
 };
 
 template<class ... Ts>
@@ -141,7 +141,7 @@ public:
             p.sources.insert(
               DataSourceConfig {
               .topic_name = source.resolved_topic_name,
-              .member_path = member_path_as_strvec(active->member),
+              .member_path = to_descriptor(active->member),
               .axis = axis
             });
           }
@@ -172,7 +172,6 @@ public:
   {
     for (auto & plot : plots_) {
       for (auto & [source, _] : plot.sources) {
-
         auto descriptor = std::get_if<SourceDescriptor>(&source.info);
         if (descriptor && descriptor->error == DataSourceError::None) {
           auto type_it = available_topics_to_types_.find(source.resolved_topic_name);
@@ -180,16 +179,21 @@ public:
             // if type is known, initialize and set ready state
             auto itsp_it = message_type_to_introspection_.find(type_it->second);
             if (itsp_it != message_type_to_introspection_.end()) {
-              auto member_info_opt = itsp_it->second->get_member(descriptor->member_path);
-              if (member_info_opt.has_value()) {
-                node_->add_topic_field(
-                  source.resolved_topic_name, itsp_it->second,
-                  member_info_opt.value());
-                source.info = ActiveDataSource {
-                  .warning = DataWarning::None,
-                  .member = member_info_opt.value(),
-                };
-              } else {
+              try {
+                auto member_info_opt = itsp_it->second->get_member_sequence_path(
+                  descriptor->member_path);
+                if (member_info_opt.has_value()) {
+                  node_->add_topic_field(
+                    source.resolved_topic_name, itsp_it->second,
+                    member_info_opt.value());
+                  source.info = ActiveDataSource {
+                    .warning = DataWarning::None,
+                    .member = member_info_opt.value(),
+                  };
+                } else {
+                  descriptor->error = DataSourceError::InvalidMember;
+                }
+              } catch (const introspection_error &) {
                 descriptor->error = DataSourceError::InvalidMember;
               }
             }
@@ -228,19 +232,21 @@ public:
         auto introspection = message_type_to_introspection_.at(type);
         size_t i {0};
         for (const auto & member : introspection->members()) {
-          if (is_numeric(member.back()->type_id_)) {
-            std::string member_formatted = fmt_member_path(member);
-            ImGui::Selectable(member_formatted.c_str(), false);
+          if (is_numeric(member.back()->type_id_) && !contains_sequence(member)) {
+            std::stringstream ss;
+            ss << member;
+            auto member_str = ss.str();
+            ImGui::Selectable(member_str.c_str(), false);
             MemberPayload payload {
               .topic_name = topic.c_str(),
-              .member = member,
+              .member = assume_members_unindexed(member),
             };
             if (ImGui::IsItemHovered()) {
               ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
               if (GImGui->HoveredIdTimer > 0.5) {
                 ImGui::BeginTooltip();
-                ImGui::Text("add %s to plot0", member_formatted.c_str());
+                ImGui::Text("add %s to plot0", member_str.c_str());
                 ImGui::Text("or drag and drop on plot of choice");
                 ImGui::EndTooltip();
               }

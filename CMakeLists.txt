@@ -54,7 +54,7 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
   find_package(ament_cmake_gmock REQUIRED)
   find_package(geometry_msgs REQUIRED)
-  find_package(nav_msgs REQUIRED)
+  find_package(vision_msgs REQUIRED)
 
   ament_add_gmock(test_introspection test/test_introspection.cpp)
   target_link_libraries(test_introspection quickplot)
@@ -69,7 +69,7 @@ if(BUILD_TESTING)
     rosidl_typesupport_cpp
     rosidl_typesupport_introspection_cpp
     geometry_msgs
-    nav_msgs)
+    vision_msgs)
 
   ament_add_gmock(test_config test/test_config.cpp WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   target_link_libraries(test_config quickplot)

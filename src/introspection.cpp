@@ -1,6 +1,7 @@
 #include <vector>
 #include <stdexcept>
 #include <string>
+#include <algorithm>
 #include <rclcpp/rclcpp.hpp>
 #include <boost/utility.hpp> // for next(it)
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
@@ -9,76 +10,49 @@
 namespace quickplot
 {
 
-std::ostream & operator<<(std::ostream & out, const MemberPtr & member)
-{
-  out << member->name_;
-  return out;
-}
-
-std::string fmt_member_path(const MemberPath & member)
+std::string source_id(const std::string & topic, const MemberSequencePathDescriptor & members)
 {
   std::stringstream ss;
-  for (auto it = member.cbegin(); it != member.cend(); ++it) {
-    ss << (*it)->name_;
-    if (next(it) != member.cend()) {
-      ss << ".";
-    }
-  }
+  ss << topic << "/" << members;
   return ss.str();
 }
 
-std::vector<std::string> member_path_as_strvec(const MemberPath & path)
-{
-  std::vector<std::string> result;
-  for (const auto & member : path) {
-    result.push_back(member->name_);
-  }
-  return result;
-}
-
-std::string source_id(const std::string & topic, const std::vector<std::string> & members)
+std::string source_id(const std::string & topic, const MemberSequencePath & members)
 {
   std::stringstream ss;
-  ss << topic << "/" << boost::algorithm::join(members, ".");
+  ss << topic << "/" << members;
   return ss.str();
 }
 
-std::string source_id(const std::string & topic, const MemberPath & member_path)
-{
-  std::stringstream ss;
-  ss << topic << "/" << fmt_member_path(member_path);
-  return ss.str();
-}
-
-double cast_numeric(void * n, uint8_t type_id)
+double cast_numeric(const void * n, uint8_t type_id)
 {
   switch (type_id) {
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_FLOAT:
-      return *static_cast<float *>(n);
+      return *static_cast<const float *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_DOUBLE:
-      return *static_cast<double *>(n);
+      return *static_cast<const double *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT64:
-      return *static_cast<int64_t *>(n);
+      return *static_cast<const int64_t *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT32:
-      return *static_cast<int32_t *>(n);
+      return *static_cast<const int32_t *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT16:
-      return *static_cast<int16_t *>(n);
+      return *static_cast<const int16_t *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_INT8:
-      return *static_cast<int8_t *>(n);
+      return *static_cast<const int8_t *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT64:
-      return *static_cast<uint64_t *>(n);
+      return *static_cast<const uint64_t *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT32:
-      return *static_cast<uint32_t *>(n);
+      return *static_cast<const uint32_t *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT16:
-      return *static_cast<uint16_t *>(n);
+      return *static_cast<const uint16_t *>(n);
     case rosidl_typesupport_introspection_cpp::ROS_TYPE_UINT8:
-      return *static_cast<uint8_t *>(n);
+      return *static_cast<const uint8_t *>(n);
     default:
       throw std::invalid_argument("non-numeric member type_id");
   }
 }
 
-size_t total_member_offset(MemberPath path)
+size_t total_member_offset(const MemberPath & path)
 {
   size_t total = 0;
   for (const auto & member : path) {
@@ -87,10 +61,67 @@ size_t total_member_offset(MemberPath path)
   return total;
 }
 
-double get_numeric(void * message, MemberPath member)
+MemberSequencePath assume_members_unindexed(const MemberPath & in_path)
 {
-  auto bytes = reinterpret_cast<uint8_t *>(message) + total_member_offset(member);
+  MemberSequencePath result;
+  for (const auto & member : in_path) {
+    auto & item = result.emplace_back();
+    item.first = member;
+    item.second = 0;
+  }
+  return result;
+}
+
+double get_numeric(const void * message, const MemberPath & member)
+{
+  auto bytes = static_cast<const uint8_t *>(message) + total_member_offset(member);
   return cast_numeric(bytes, member.back()->type_id_);
+}
+
+double get_nested_numeric(const void * message, const MemberSequencePath & path)
+{
+  auto member_memory = static_cast<const uint8_t *>(message);
+  uint8_t last_type;
+  for (const auto & [member, idx] : path) {
+    member_memory += member->offset_;
+    if (member->is_array_) {
+      auto next_mem = member->get_const_function(member_memory, idx);
+      member_memory = static_cast<const uint8_t *>(next_mem);
+    }
+    last_type = member->type_id_;
+  }
+  return cast_numeric(member_memory, last_type);
+}
+
+MemberSequencePathItemDescriptor to_descriptor_item(const MemberSequencePathItem & item)
+{
+  std::optional<size_t> idx = std::nullopt;
+  if (item.first->is_array_) {
+    idx = item.second;
+  }
+  return MemberSequencePathItemDescriptor {
+    item.first->name_,
+    idx,
+  };
+}
+
+MemberSequencePathDescriptor to_descriptor(const MemberSequencePath & in_path)
+{
+  MemberSequencePathDescriptor out_path;
+  std::transform(
+    in_path.begin(), in_path.end(), std::back_inserter(out_path),
+    &to_descriptor_item);
+  return out_path;
+}
+
+bool contains_sequence(const MemberPath & member_path)
+{
+  for (const auto & member : member_path) {
+    if (member->is_array_) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool is_numeric(uint8_t type_id)
@@ -203,7 +234,7 @@ MessageMemberContainer MessageIntrospection::members() const
 static bool matches(MemberPath path, const std::vector<std::string> & searched_member_path)
 {
   auto it = path.cbegin();
-  for (const auto& searched_member : searched_member_path) {
+  for (const auto & searched_member : searched_member_path) {
     if (it == path.cend()) {
       return false;
     }
@@ -215,7 +246,7 @@ static bool matches(MemberPath path, const std::vector<std::string> & searched_m
   return it == path.cend();
 }
 
-std::optional<MemberPath> MessageIntrospection::get_member(
+std::optional<MemberPath> MessageIntrospection::get_member_path(
   std::vector<std::string> member_path) const
 {
   if (member_path.empty()) {
@@ -229,4 +260,88 @@ std::optional<MemberPath> MessageIntrospection::get_member(
   return std::nullopt;
 }
 
+std::optional<MemberSequencePath> MessageIntrospection::get_member_sequence_path(
+  MemberSequencePathDescriptor in_path) const
+{
+  if (in_path.empty()) {
+    std::invalid_argument("member_path required");
+  }
+  std::vector<std::string> names;
+  for (const auto & [name, _] : in_path) {
+    names.push_back(name);
+  }
+  auto member_path_opt = get_member_path(names);
+  if (!member_path_opt.has_value()) {
+    return std::nullopt;
+  }
+  auto member_path = member_path_opt.value();
+  // member_path must be same size as in_path
+  auto member_it = member_path.cbegin();
+
+  MemberSequencePath result(in_path.size());
+  MemberPath sub_path;
+  for (size_t i = 0; i < result.size(); i++) {
+    if (in_path[i].sequence_idx.has_value() && !(*member_it)->is_array_) {
+      throw introspection_error(
+              "member sequence path descriptor item defines index for non-array member");
+    }
+    result[i].first = *member_it;
+    result[i].second = in_path[i].sequence_idx.value_or(0);
+    ++member_it;
+  }
+  return result;
+}
+
 } // namespace quickplot
+
+void write_member_sequence_path_item_descriptor(
+  std::ostream & out,
+  const quickplot::MemberSequencePathItemDescriptor & item)
+{
+  out << item.member_name;
+  if (item.sequence_idx.has_value()) {
+    out << "[" << item.sequence_idx.value() << "]";
+  }
+}
+
+std::ostream & operator<<(std::ostream & out, const quickplot::MemberSequencePathDescriptor & path)
+{
+  for (auto it = path.cbegin(); it != path.cend(); ++it) {
+    write_member_sequence_path_item_descriptor(out, *it);
+    if (next(it) != path.cend()) {
+      out << ".";
+    }
+  }
+  return out;
+}
+
+std::ostream & operator<<(std::ostream & out, const quickplot::MemberPath & path)
+{
+  for (auto it = path.cbegin(); it != path.cend(); ++it) {
+    out << (*it)->name_;
+    if (next(it) != path.cend()) {
+      out << ".";
+    }
+  }
+  return out;
+}
+
+std::ostream & operator<<(std::ostream & out, const quickplot::MemberSequencePathItem & item)
+{
+  out << item.first->name_;
+  if (item.first->is_array_) {
+    out << "[" << item.second << "]";
+  }
+  return out;
+}
+
+std::ostream & operator<<(std::ostream & out, const quickplot::MemberSequencePath & path)
+{
+  for (auto it = path.cbegin(); it != path.cend(); ++it) {
+    out << *it;
+    if (next(it) != path.cend()) {
+      out << ".";
+    }
+  }
+  return out;
+}

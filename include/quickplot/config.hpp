@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <filesystem>
 #include <rclcpp/duration.hpp>
+#include <quickplot/introspection.hpp>
 
 namespace fs = std::filesystem;
 
@@ -21,7 +22,7 @@ struct config_error : public std::exception
 struct DataSourceConfig
 {
   std::string topic_name;
-  std::vector<std::string> member_path;
+  MemberSequencePathDescriptor member_path;
   // axis 0, 1 or 2
   int axis;
 

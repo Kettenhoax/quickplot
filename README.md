@@ -47,8 +47,7 @@ plots:
 * [ ] axis unit label suggestion (e.g. m/s for twist.linear)
 * [ ] range suggestions based on suggested unit (e.g. angles -pi to pi)
 
-* [ ] visualize covariance matrices in nav_msgs/Odometry or geometry_msgs/Pose as heatmaps
-* [ ] use array members as data sources
+* [ ] visualize covariance matrices as heatmaps
 
 ## tests
 

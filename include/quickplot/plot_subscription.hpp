@@ -150,7 +150,7 @@ public:
   // Using list instead of vector, since the emplace_back operation does not require
   // the element to be MoveConstructible for resizing the array. The data buffer should
   // not be move constructed.
-  std::list<std::pair<MemberPath, PlotDataBuffer>> buffers_;
+  std::list<std::pair<MemberSequencePath, PlotDataBuffer>> buffers_;
 
   explicit PlotSubscription(
     std::string topic_name,
@@ -178,7 +178,7 @@ public:
   // disable copy and move
   PlotSubscription & operator=(PlotSubscription && other) = delete;
 
-  void add_field(MemberPath in_member, size_t capacity)
+  void add_field(MemberSequencePath in_member, size_t capacity)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
     for (auto & [member, buffer] : buffers_) {
@@ -192,7 +192,7 @@ public:
     );
   }
 
-  PlotDataBuffer & get_buffer(MemberPath member)
+  PlotDataBuffer & get_buffer(MemberSequencePath member)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
     for (auto & [it_member, buffer] : buffers_) {
@@ -227,7 +227,7 @@ public:
     {
       std::unique_lock<std::mutex> lock(buffers_mutex_);
       for (auto & [member, buffer] : buffers_) {
-        double value = get_numeric(message_buffer_.data(), member);
+        double value = get_nested_numeric(message_buffer_.data(), member);
         buffer.push(t.seconds(), value);
       }
     }

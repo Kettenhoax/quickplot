@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-import sys
 import rclpy
 import math
 from rclpy.node import Node
@@ -23,8 +22,8 @@ class PublishRealTwist(Node):
         self._pub_twist.publish(msg)
 
 
-def main(args=sys.argv):
-    rclpy.init(args=args)
+def main():
+    rclpy.init()
     rclpy.spin(PublishRealTwist())
 
 

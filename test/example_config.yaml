@@ -4,5 +4,7 @@ plots:
       - y_min: -2
         y_max: 2
     sources:
-      - topic_name: test
+      - topic_name: /flat
         member_path: [inner, value]
+      - topic_name: sequence
+        member_path: ["inner[1]", value]

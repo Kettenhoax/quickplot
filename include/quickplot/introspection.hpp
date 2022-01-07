@@ -7,6 +7,8 @@
 #include <memory>
 #include <assert.h>
 #include <optional>
+#include <utility>
+#include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <rcpputils/shared_library.hpp>
 #include <rosidl_typesupport_introspection_cpp/message_introspection.hpp>
@@ -31,37 +33,54 @@ struct introspection_error : public std::exception
   }
 };
 
+struct MemberSequencePathItemDescriptor
+{
+  std::string member_name;
+  std::optional<size_t> sequence_idx;
+
+  inline bool operator==(const MemberSequencePathItemDescriptor & other) const
+  {
+    return member_name == other.member_name && sequence_idx == other.sequence_idx;
+  }
+};
+
+// sequence of member names and indices, to find as members in introspection typesupport
+using MemberSequencePathDescriptor = std::vector<MemberSequencePathItemDescriptor>;
+
 using MemberPtr = const rosidl_typesupport_introspection_cpp::MessageMember *;
+
+// sequence of introspection typesupport members within a message, from outer member to inner
 using MemberPath = std::list<MemberPtr>;
 
-std::ostream & operator<<(std::ostream & out, const MemberPtr &);
+// introspection typesupport member and its index to access a specific item, if the member is a
+// sequence
+using MemberSequencePathItem = std::pair<MemberPtr, size_t>;
 
-std::string fmt_member_path(const MemberPath &);
+using MemberSequencePath = std::vector<MemberSequencePathItem>;
 
-std::vector<std::string> member_path_as_strvec(const MemberPath &);
+// construct source id to identify data source from a descriptor
+std::string source_id(const std::string & topic, const MemberSequencePathDescriptor & members);
 
-std::string source_id(const std::string & topic, const std::vector<std::string> & members);
+// construct source id to identify data source from a resolved member path
+std::string source_id(const std::string & topic, const MemberSequencePath & member_path);
 
-std::string source_id(const std::string & topic, const MemberPath & member_path);
+double cast_numeric(const void * n, uint8_t type_id);
 
 bool is_numeric(uint8_t type_id);
 
-double get_numeric(void *, MemberPath);
+bool contains_sequence(const MemberPath &);
 
-// static bool is_message_type(
-//   MemberPtr member, std::string_view message_name,
-//   std::string_view message_namespace)
-// {
-//   if (member->type_id_ != rosidl_typesupport_introspection_cpp::ROS_TYPE_MESSAGE) {
-//     return false;
-//   }
-//   auto members =
-//     static_cast<const rosidl_typesupport_introspection_cpp::MessageMembers *>(member->members_
-//     ->
-//     data);
-//   return message_name.compare(members->message_name_) == 0 && message_namespace.compare(
-//     members->message_namespace_) == 0;
-// }
+size_t total_member_offset(const MemberPath &);
+
+MemberSequencePath assume_members_unindexed(const MemberPath &);
+
+double get_numeric(const void *, const MemberPath &);
+
+double get_nested_numeric(const void *, const MemberSequencePath &);
+
+MemberSequencePathItemDescriptor to_descriptor_item(const MemberSequencePathItem &);
+
+MemberSequencePathDescriptor to_descriptor(const MemberSequencePath &);
 
 class MemberIterator : public std::iterator<std::forward_iterator_tag, MemberPath>
 {
@@ -72,15 +91,18 @@ private:
     // index into the selected message member
     size_t index;
 
-    const rosidl_typesupport_introspection_cpp::MessageMember * member() {
+    const rosidl_typesupport_introspection_cpp::MessageMember * member()
+    {
       return &members->members_[index];
     }
 
-    bool is_at_end() {
+    bool is_at_end()
+    {
       return index + 1 >= members->member_count_;
     }
 
-    bool is_past_end() {
+    bool is_past_end()
+    {
       return index >= members->member_count_;
     }
   };
@@ -104,7 +126,7 @@ private:
       value_.push_back(deque_.back().member());
       return;
     }
-    
+
     // case 2: we're at the end of a nested member, and need to backtrack to the next sibling
     while (!deque_.empty() && deque_.back().is_at_end()) {
       value_.pop_back();
@@ -216,7 +238,7 @@ private:
 public:
   explicit MessageIntrospection(std::string message_type);
 
-  const char* message_type() const;
+  const char * message_type() const;
 
   const rosidl_message_type_support_t * get_typesupport_handle() const;
 
@@ -227,7 +249,24 @@ public:
 
   std::optional<size_t> get_header_offset() const;
 
-  std::optional<MemberPath> get_member(std::vector<std::string> member_path) const;
+  std::optional<MemberPath> get_member_path(std::vector<std::string> member_path) const;
+
+  std::optional<MemberSequencePath> get_member_sequence_path(
+    MemberSequencePathDescriptor in_path) const;
 };
 
 } // namespace quickplot
+
+// TODO(ZeilingerM) couldn't figure out how to compute the ostream overload (gcc 9.3)
+// std::ostream & operator<<(std::ostream &, const quickplot::MemberSequencePathItemDescriptor &);
+void write_member_sequence_path_item_descriptor(
+  std::ostream &,
+  const quickplot::MemberSequencePathItemDescriptor &);
+
+std::ostream & operator<<(std::ostream &, const quickplot::MemberSequencePathDescriptor &);
+
+std::ostream & operator<<(std::ostream &, const quickplot::MemberPath &);
+
+std::ostream & operator<<(std::ostream &, const quickplot::MemberSequencePathItem &);
+
+std::ostream & operator<<(std::ostream &, const quickplot::MemberSequencePath &);

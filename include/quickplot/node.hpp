@@ -23,7 +23,7 @@ public:
   void add_topic_field(
     std::string topic,
     std::shared_ptr<MessageIntrospection> introspection,
-    MemberPath member)
+    MemberSequencePath member)
   {
     std::unique_lock<std::mutex> lock(topic_mutex);
     auto it = topics_to_subscriptions.try_emplace(

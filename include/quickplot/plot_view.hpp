@@ -32,14 +32,14 @@ enum class DataWarning
 struct SourceDescriptor
 {
   DataSourceError error;
-  std::vector<std::string> member_path;
+  MemberSequencePathDescriptor member_path;
 };
 
 struct ActiveDataSource
 {
   DataWarning warning;
   // resolved introspection member path
-  MemberPath member;
+  MemberSequencePath member;
 };
 
 struct DataSource
@@ -87,7 +87,7 @@ struct PlotViewOptions
 
 ImPlotPoint circular_buffer_access(void * data, int idx)
 {
-  auto buffer = reinterpret_cast<CircularBuffer::const_iterator *>(data);
+  auto buffer = static_cast<CircularBuffer::const_iterator *>(data);
   return buffer->operator[](idx);
 }
 
