@@ -1,3 +1,5 @@
+#pragma once
+
 #include <rclcpp/rclcpp.hpp>
 #include <unordered_map>
 #include <map>

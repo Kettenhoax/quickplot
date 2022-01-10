@@ -1,3 +1,5 @@
+#pragma once
+
 // include implot.h for ImPlotPoint struct, to avoid copies when plotting
 #include "implot.h" // NOLINT
 
