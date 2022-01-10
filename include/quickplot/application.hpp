@@ -77,6 +77,53 @@ std::string series_id(const std::string & topic, const MemberSequencePath & memb
   return ss.str();
 }
 
+struct MessageTypeError
+{
+  std::string message_type;
+  std::string error_message;
+};
+
+using MessageIntrospectionPtr = std::shared_ptr<MessageIntrospection>;
+
+// either a loaded and initialized introspection service, information on why it isn't available
+using MessageTypeInfo = std::variant<MessageIntrospectionPtr, MessageTypeError>;
+
+const char * get_message_type(const MessageTypeInfo & type_info)
+{
+  return std::visit(
+    overloaded {
+      [](const std::shared_ptr<MessageIntrospection> & introspection) {
+        return introspection->message_type();
+      },
+      [](const MessageTypeError & error) {
+        return error.message_type.c_str();
+      }
+    }, type_info);
+}
+
+class IntrospectionCache
+{
+private:
+  std::unordered_map<std::string, MessageIntrospectionPtr> cache_;
+
+public:
+  IntrospectionCache() = default;
+
+  MessageIntrospectionPtr load(const std::string & message_type)
+  {
+    auto it = cache_.find(message_type);
+    if (it != cache_.end()) {
+      return it->second;
+    }
+    const auto & [new_entry, _] = cache_.emplace(
+      message_type,
+      std::make_shared<MessageIntrospection>(message_type));
+    return new_entry->second;
+  }
+};
+
+using TopicTypeMap = std::map<std::string, MessageTypeInfo>;
+
 class Application
 {
 private:
@@ -84,14 +131,11 @@ private:
   rclcpp::Event::SharedPtr graph_event_;
   rclcpp::JumpHandler::SharedPtr jump_handler_;
 
-  // maps already-resolved full topic names to a single ROS type, if there are only publishers
-  // of one type
-  std::map<std::string, std::string> available_topics_to_types_;
-  std::unordered_map<std::string,
-    std::shared_ptr<MessageIntrospection>> message_type_to_introspection_;
+  // maps already-resolved full topic names to a single ROS type
+  // assumes that all publishers on this topic publish the same message type
+  TopicTypeMap available_topics_to_types_;
 
-  // set of message types for which no typesupport is installed
-  std::unordered_set<std::string> message_type_unavailable_;
+  IntrospectionCache introspection_cache_;
 
   // length of history of all plots
   double history_length_;
@@ -198,22 +242,6 @@ public:
     return config;
   }
 
-  void load_introspection_or_insert_missing(std::string type)
-  {
-    if (message_type_to_introspection_.find(type) == message_type_to_introspection_.end()) {
-      if (message_type_unavailable_.find(type) == message_type_unavailable_.end()) {
-        try {
-          message_type_to_introspection_.emplace(
-            type,
-            std::make_shared<MessageIntrospection>(type));
-        } catch (const introspection_error &) {
-          // TODO(ZeilingerM) store specific error to display on GUI
-          message_type_unavailable_.insert(type);
-        }
-      }
-    }
-  }
-
   std::optional<ActiveDataSource> try_initialize_source(
     SourceDescriptor & descriptor)
   {
@@ -221,12 +249,14 @@ public:
     auto type_it = available_topics_to_types_.find(topic);
     if (type_it != available_topics_to_types_.end()) {
       // if type is known, initialize and set ready state
-      auto itsp_it = message_type_to_introspection_.find(type_it->second);
-      if (itsp_it != message_type_to_introspection_.end()) {
+      const auto & [topic, type_info] = *type_it;
+      auto introspection_opt = std::get_if<MessageIntrospectionPtr>(&type_info);
+      if (introspection_opt) {
+        auto introspection = *introspection_opt;
         try {
-          auto member_opt = itsp_it->second->get_member_sequence_path(descriptor.member_path);
+          auto member_opt = introspection->get_member_sequence_path(descriptor.member_path);
           if (member_opt.has_value()) {
-            auto subscription = node_->get_or_create_subscription(topic, itsp_it->second);
+            auto subscription = node_->get_or_create_subscription(topic, introspection);
             auto member = member_opt.value();
             auto buffer = subscription->add_source(member);
             return ActiveDataSource {
@@ -241,10 +271,13 @@ public:
         } catch (const introspection_error &) {
           descriptor.error = DataSourceError::InvalidMember;
         }
+      } else {
+        descriptor.error = DataSourceError::MessageTypeUnavailable;
       }
-      // if type is not known, we leave the source in an error state, and the GUI should show
-      // the source as unavailable
-    }
+    } // else {
+      // if type is not known yet, we leave the source in an uninitialized state, and the GUI should
+      // show the source as unavailable
+    // }
     return std::nullopt;
   }
 
@@ -276,78 +309,83 @@ public:
     }
   }
 
-  bool TopicEntry(const std::string & topic, const std::string & type)
+  bool TopicEntryError(const std::string & topic, const MessageTypeError & error)
   {
-    ImGuiTreeNodeFlags tree_node_flags = ImGuiTreeNodeFlags_None;
-
-    // for any topic type, there must be either
-    // * a type introspection library loaded
-    // * the type confirmed to be unavailable
-    bool type_available = message_type_unavailable_.find(type) == message_type_unavailable_.end();
-    if (!type_available) {
-      ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-      tree_node_flags |= ImGuiTreeNodeFlags_Leaf;
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    if (ImGui::TreeNodeEx(topic.c_str(), ImGuiTreeNodeFlags_Leaf)) {
+      ImGui::PopStyleColor();
+      // color was eye-dropped from Rviz display warnings
+      // TODO(ZeilingerM) single hardcoded color does not work well with theme changes
+      static ImVec4 WARNING_COLOR = static_cast<ImVec4>(ImColor::HSV(0.1083f, 0.968f, 0.867f));
+      ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
+      ImGui::TextWrapped("message type '%s' is not available:", error.message_type.c_str());
+      ImGui::TextWrapped("%s", error.error_message.c_str());
+      ImGui::PopStyleColor();
+      return true;
     }
+    ImGui::PopStyleColor();
+    return false;
+  }
 
-    // the type-to-introspection map is assumed to contain the type key, since unavailable key is
-    // handled at this point
-    if (ImGui::TreeNodeEx(topic.c_str(), tree_node_flags)) {
-      if (type_available) {
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-          ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
-          ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
-          ImGui::SameLine();
-          ImGui::Text("Dragging %s", topic.c_str());
-          ImGui::EndDragDropSource();
-        }
-        auto introspection = message_type_to_introspection_.at(type);
-        size_t i {0};
-        for (const auto & member : introspection->members()) {
-          if (is_numeric(member.back()->type_id_) && !contains_sequence(member)) {
-            std::stringstream ss;
-            ss << member;
-            auto member_str = ss.str();
-            ImGui::Selectable(member_str.c_str(), false);
-            MemberPayload payload {
-              .topic_name = topic.c_str(),
-              .member = assume_members_unindexed(member),
-            };
-            if (ImGui::IsItemHovered()) {
-              ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+  bool TopicEntryInitialized(
+    const std::string & topic,
+    const std::shared_ptr<MessageIntrospection> & introspection)
+  {
+    if (ImGui::TreeNode(topic.c_str())) {
+      if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+        ImGui::SetDragDropPayload("topic_name", topic.c_str(), topic.size());
+        ImPlot::ItemIcon(ImGui::GetColorU32(ImGuiCol_Text));
+        ImGui::SameLine();
+        ImGui::Text("Dragging %s", topic.c_str());
+        ImGui::EndDragDropSource();
+      }
+      size_t i {0};
+      for (const auto & member : introspection->members()) {
+        if (is_numeric(member.back()->type_id_) && !contains_sequence(member)) {
+          std::stringstream ss;
+          ss << member;
+          auto member_str = ss.str();
+          ImGui::Selectable(member_str.c_str(), false);
+          MemberPayload payload {
+            .topic_name = topic.c_str(),
+            .member = assume_members_unindexed(member),
+          };
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
 
-              if (GImGui->HoveredIdTimer > 0.5) {
-                ImGui::BeginTooltip();
-                ImGui::Text("add %s to plot0", member_str.c_str());
-                ImGui::Text("or drag and drop on plot of choice");
-                ImGui::EndTooltip();
-              }
-              if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-                add_topic_field_to_plot(payload);
-              }
+            if (GImGui->HoveredIdTimer > 0.5) {
+              ImGui::BeginTooltip();
+              ImGui::Text("add %s to plot0", member_str.c_str());
+              ImGui::Text("or drag and drop on plot of choice");
+              ImGui::EndTooltip();
             }
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-              ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
-              ImGui::EndDragDropSource();
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+              add_topic_field_to_plot(payload);
             }
           }
-          ++i;
+          if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+            ImGui::SetDragDropPayload("topic_member", &payload, sizeof(payload));
+            ImGui::EndDragDropSource();
+          }
         }
-      } else { /* not type_available */
-        ImGui::PopStyleColor();
-
-        // color was eye-dropped from Rviz display warnings
-        // TODO(ZeilingerM) single hardcoded color is not robust against theme changes
-        static ImVec4 WARNING_COLOR = static_cast<ImVec4>(ImColor::HSV(0.1083f, 0.968f, 0.867f));
-        ImGui::PushStyleColor(ImGuiCol_Text, WARNING_COLOR);
-        ImGui::TextWrapped("message type '%s' is not available", type.c_str());
-        ImGui::PopStyleColor();
+        ++i;
       }
       return true;
     }
-    if (!type_available) {
-      ImGui::PopStyleColor();
-    }
     return false;
+  }
+
+  bool TopicEntry(const std::string & topic, const MessageTypeInfo & type_info)
+  {
+    return std::visit(
+      overloaded {
+        [this, topic](const std::shared_ptr<MessageIntrospection> & introspection) {
+          return TopicEntryInitialized(topic, introspection);
+        },
+        [this, topic](const MessageTypeError & error) {
+          return TopicEntryError(topic, error);
+        }
+      }, type_info);
   }
 
   void EndTopicEntry()
@@ -366,16 +404,26 @@ public:
           continue;
         }
         auto new_type = types[0];
-        auto [entry, inserted] = available_topics_to_types_.try_emplace(topic, new_type);
-        if (!inserted) {
+        auto it = available_topics_to_types_.find(topic);
+        if (it != available_topics_to_types_.end()) {
+          const auto & [_, type_info] = *it;
           // the topic was already in the map, so we possibly have active listeners
           // parsing a message type that may have changed
-          if (entry->second != new_type) {
+          if (new_type.compare(get_message_type(type_info)) != 0) {
             std::invalid_argument("type of topic " + topic + " changed");
           }
         } else {
           // for new topics, load their introspection support
-          load_introspection_or_insert_missing(new_type);
+          try {
+            auto introspection = introspection_cache_.load(new_type);
+            available_topics_to_types_.emplace(topic, introspection);
+          } catch (const introspection_error & e) {
+            available_topics_to_types_.emplace(
+              topic, MessageTypeError {
+                .message_type = new_type,
+                .error_message = e.what(),
+              });
+          }
         }
       }
       initialize_pending_sources();
@@ -511,9 +559,11 @@ public:
 
         std::string filter_text(filter_text_raw);
 
-        std::vector<std::pair<std::string, std::string>> shown_available_topics;
+        std::list<TopicTypeMap::iterator> shown_available_topics;
         size_t total_available = 0;
-        for (const auto & [topic, type] : available_topics_to_types_) {
+        auto it = available_topics_to_types_.begin();
+        for (;it != available_topics_to_types_.end(); ++it) {
+          const auto & [topic, type] = *it;
           if (node_->is_subscribed_to(topic)) {
             // skip subscribed topics, those are already listed in the 'active topics' section
             continue;
@@ -522,7 +572,7 @@ public:
           if (topic.find(filter_text) == std::string::npos) {
             continue;
           }
-          shown_available_topics.push_back({topic, type});
+          shown_available_topics.push_back(it);
         }
 
         // defer rendering the items up to this point, to print the number of shown topics before the topics
@@ -532,8 +582,8 @@ public:
           ImGui::Text("Showing %lu of %lu topics", shown_available_topics.size(), total_available);
           ImGui::PopItemWidth();
         }
-        for (const auto & [topic, type] : shown_available_topics) {
-          if (TopicEntry(topic, type)) {
+        for (const auto & it : shown_available_topics) {
+          if (TopicEntry(it->first, it->second)) {
             EndTopicEntry();
           }
         }
@@ -591,9 +641,12 @@ public:
 
   void accept_member_payload(Plot & plot, ImPlotYAxis axis, MemberPayload * payload)
   {
-    auto message_type = available_topics_to_types_.at(payload->topic_name);
-    auto introspection = message_type_to_introspection_.at(message_type);
-    auto subscription = node_->get_or_create_subscription(payload->topic_name, introspection);
+    const auto& type_info = available_topics_to_types_.at(payload->topic_name);
+    auto introspection_opt = std::get_if<MessageIntrospectionPtr>(&type_info);
+    rcpputils::assert_true(
+      static_cast<bool>(introspection_opt),
+      "message type must be available when accept_member_payload is triggered");
+    auto subscription = node_->get_or_create_subscription(payload->topic_name, *introspection_opt);
     auto buffer = subscription->add_source(payload->member);
 
     auto id = series_id(payload->topic_name, payload->member);
