@@ -18,7 +18,7 @@ overloaded(Ts ...)->overloaded<Ts...>;
 
 struct MemberPayload
 {
-  const char * topic_name;
+  std::string topic_name;
   MemberSequencePath member;
 };
 
