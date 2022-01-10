@@ -183,7 +183,6 @@ int main(int argc, char ** argv)
       }
       ImGui::DockBuilderFinish(dockspace_id);
     }
-
     ImGui::End();
 
     // update quickplot

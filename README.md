@@ -23,17 +23,19 @@ plots:
         y_max: 2
       - y_min: -0.5
         y_max: 0.5
-    sources:
-      - topic_name: /cmd_vel
-        member_path:
-          - twist
-          - linear
-          - x
-      - topic_name: /cmd_vel
-        member_path:
-          - twist
-          - angular
-          - z
+    series:
+      - source:
+          topic_name: /cmd_vel
+          member_path:
+            - twist
+            - linear
+            - x
+      - source:
+          topic_name: /cmd_vel
+          member_path:
+            - twist
+            - angular
+            - z
         axis: 1
 ```
 

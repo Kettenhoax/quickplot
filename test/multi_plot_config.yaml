@@ -3,14 +3,16 @@ plots:
   - axes:
       - y_min: -1
         y_max: 1
-    sources:
-      - topic_name: test0
-        member_path:
-          - data
+    series:
+      - source:
+          topic_name: test0
+          member_path:
+            - data
   - axes:
       - y_min: -2
         y_max: 2
-    sources:
-      - topic_name: test1
-        member_path:
-          - data
+    series:
+      - source:
+          topic_name: test1
+          member_path:
+            - data

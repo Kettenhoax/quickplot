@@ -1,108 +1,17 @@
+#pragma once
+
 #include "implot.h" // NOLINT
-#include <vector>
 #include <mutex>
 #include <string>
-#include <memory>
+#include <vector>
 #include <set>
-#include <utility>
 #include <unordered_set>
 #include <boost/algorithm/string/join.hpp>
 #include <rclcpp/time.hpp>
-#include "quickplot/config.hpp"
+#include "quickplot/plot.hpp"
 
 namespace quickplot
 {
-
-// helper for variant visit
-template<class ... Ts>
-struct overloaded : Ts ... { using Ts::operator() ...; };
-template<class ... Ts>
-overloaded(Ts ...)->overloaded<Ts...>;
-
-enum class DataSourceError
-{
-  None = 0,
-  // the message type behind the data source is not available on the system running the plot tool
-  MessageTypeUnavailable,
-  // the data source requests a member that is not part of the message type
-  InvalidMember,
-};
-
-enum class DataWarning
-{
-  None = 0,
-  // the timestamps in the last received messages were out of range
-  TimeStampOutOfRange = 1,
-};
-
-struct SourceDescriptor
-{
-  std::string resolved_topic_name;
-  DataSourceError error;
-  MemberSequencePathDescriptor member_path;
-};
-
-struct ActiveDataSource
-{
-  DataWarning warning;
-
-  // pointer to subscription which fills the buffer
-  std::shared_ptr<PlotSubscription> subscription;
-
-  // resolved member path of topic type
-  MemberSequencePath member;
-
-  // buffer to time series
-  std::shared_ptr<PlotDataBuffer> data;
-};
-
-struct DataSource
-{
-  std::string id;
-  std::variant<SourceDescriptor, ActiveDataSource> source;
-
-  std::string topic_name() const
-  {
-    return std::visit(
-      overloaded {
-        [this](const ActiveDataSource & active) {
-          return active.subscription->topic_name();
-        },
-        [this](const SourceDescriptor & descriptor) {
-          return descriptor.resolved_topic_name;
-        }
-      }, source);
-  }
-
-  inline bool operator==(const DataSource & other) const
-  {
-    return id == other.id;
-  }
-};
-
-} // namespace quickplot
-
-namespace std
-{
-template<>
-struct hash<quickplot::DataSource>
-{
-  inline size_t operator()(const quickplot::DataSource & source) const
-  {
-    return hash<std::string>().operator()(source.topic_name());
-  }
-};
-} // namespace std
-
-namespace quickplot
-{
-
-struct Plot
-{
-  // source and axis
-  std::vector<std::pair<DataSource, int>> sources;
-  std::vector<AxisConfig> axes;
-};
 
 struct PlotViewOptions
 {
@@ -126,7 +35,7 @@ struct PlotViewResult
   : displayed(false), time_scale_delta(0.0f) {}
 };
 
-PlotViewResult PlotView(const char * id, Plot & plot, const PlotViewOptions & options)
+PlotViewResult BeginPlotView(const char * id, Plot & plot, const PlotViewOptions & options)
 {
   for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
     const auto & axis_config = plot.axes[a];
@@ -188,10 +97,10 @@ PlotViewResult PlotView(const char * id, Plot & plot, const PlotViewOptions & op
   return result;
 }
 
-bool PlotSourcePopup(const DataSource & source)
+bool PlotSeriesPopup(const std::string & id)
 {
   bool removed = false;
-  if (ImPlot::BeginLegendPopup(source.id.c_str())) {
+  if (ImPlot::BeginLegendPopup(id.c_str())) {
     if (ImGui::Button("remove")) {
       removed = true;
     }
@@ -200,15 +109,42 @@ bool PlotSourcePopup(const DataSource & source)
   return removed;
 }
 
-void PlotSource(const DataSource & source, const PlotDataContainer & data)
+void PlotSource(const std::string & id, const ActiveDataSource & source)
 {
-  ImPlot::HideNextItem(false, ImGuiCond_Always);
-  auto it = data.begin();
+  auto data = source.data->data();
+  auto it = data->begin();
   ImPlot::PlotLineG(
-    source.id.c_str(),
+    id.c_str(),
     &circular_buffer_get_item,
     &it,
-    data.size());
+    data->size());
+}
+
+void PlotSourceStddev(
+  const std::string & id, const ActiveDataSource & source,
+  const ActiveDataSource & stddev)
+{
+  auto stddev_data = stddev.data->data();
+  auto stddev_it = stddev_data->begin();
+  auto source_data = source.data->data();
+  auto source_it = source_data->begin();
+
+  std::vector<double> times(source_data->size());
+  std::vector<double> lower(source_data->size());
+  std::vector<double> upper(source_data->size());
+
+  for (size_t i = 0; i < lower.size(); i++) {
+    ImPlotPoint stddev_val = stddev_it[i];
+    ImPlotPoint data_val = source_it[i];
+
+    times[i] = data_val.x;
+    lower[i] = data_val.y - stddev_val.y;
+    upper[i] = data_val.y + stddev_val.y;
+  }
+
+  ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
+  ImPlot::PlotShaded(id.c_str(), times.data(), lower.data(), upper.data(), times.size());
+  ImPlot::PopStyleVar();
 }
 
 static const char * UninitializedText = "data not received yet";
@@ -239,14 +175,14 @@ const char * get_warning_message(DataWarning warning)
   return nullptr;
 }
 
-void PlotSourceError(
-  const DataSource & source, const char * message,
+void PlotSeriesError(
+  const TimeSeries & series, const char * message,
   const PlotViewOptions & plot_opts)
 {
   // plot empty line to show the item in legend, even though it is not received yet
   // this allows the user to remove the source from the list
   ImPlot::HideNextItem(true, ImGuiCond_Always);
-  ImPlot::PlotLine(source.id.c_str(), static_cast<float *>(nullptr), 0);
+  ImPlot::PlotLine(series.id.c_str(), static_cast<float *>(nullptr), 0);
   auto warning_color = ImPlot::GetLastItemColor();
 
   auto start_sec = plot_opts.t_start.seconds();
@@ -258,7 +194,81 @@ void PlotSourceError(
 
   ImPlot::AnnotateClamped(
     warn_x_pos, warn_y_pos, warn_offset, warning_color, "[%s]: %s",
-    source.topic_name().c_str(), message);
+    series.topic_name().c_str(), message);
+}
+
+std::optional<SeriesPayload> PlotView(Plot & plot, const PlotViewOptions & plot_opts)
+{
+  std::optional<SeriesPayload> result;
+  for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot.axes.size()); a++) {
+    for (auto series_it = plot.series.begin(); series_it != plot.series.end(); ) {
+      auto axis = series_it->second;
+      if (axis != a) {
+        // ensure series occurs in this plot axis
+        ++series_it;
+        continue;
+      }
+      const auto & series = series_it->first;
+
+      // set axis just before matching source was found, to ensure axis is only displayed
+      // if corresponding source exists
+      ImPlot::SetPlotYAxis(a);
+
+      // display either data or detected errors related to the data
+      std::visit(
+        overloaded {
+          [series, &plot_opts](const ActiveDataSource & active) {
+            if (active.warning == DataWarning::None) {
+              ImPlot::HideNextItem(false, ImGuiCond_Always);
+              PlotSource(series.id, active);
+
+              auto stddev_active = std::get_if<ActiveDataSource>(&series.stddev_source);
+              if (stddev_active) {
+                PlotSourceStddev(series.id, active, *stddev_active);
+              }
+            } else {
+              PlotSeriesError(series, get_warning_message(active.warning), plot_opts);
+            }
+          },
+          [series, &plot_opts](const SourceDescriptor & descriptor) {
+            PlotSeriesError(series, get_error_message(descriptor.error), plot_opts);
+          }
+        }, series.source);
+
+      if (PlotSeriesPopup(series.id)) {
+        series_it = plot.series.erase(series_it);
+      } else {
+        ++series_it;
+      }
+    }
+    auto & axis_config = plot.axes[a];
+    // store the current plot limits, in case they were changed via user input
+    auto limits = ImPlot::GetPlotLimits(a);
+    axis_config.y_min = limits.Y.Min;
+    axis_config.y_max = limits.Y.Max;
+  }
+
+  if (ImPlot::BeginDragDropTarget()) {
+    if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+      result = SeriesPayload {
+        .member = *static_cast<MemberPayload *>(payload->Data),
+        .axis = ImPlotYAxis_1,
+      };
+    }
+    ImPlot::EndDragDropTarget();
+  }
+  for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2}) {
+    if (ImPlot::BeginDragDropTargetY(axis)) {
+      if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
+        result = SeriesPayload {
+          .member = *static_cast<MemberPayload *>(payload->Data),
+          .axis = axis,
+        };
+      }
+      ImPlot::EndDragDropTarget();
+    }
+  }
+  return result;
 }
 
 void EndPlotView()

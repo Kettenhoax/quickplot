@@ -10,20 +10,6 @@
 namespace quickplot
 {
 
-std::string source_id(const std::string & topic, const MemberSequencePathDescriptor & members)
-{
-  std::stringstream ss;
-  ss << topic << "/" << members;
-  return ss.str();
-}
-
-std::string source_id(const std::string & topic, const MemberSequencePath & members)
-{
-  std::stringstream ss;
-  ss << topic << "/" << members;
-  return ss.str();
-}
-
 double cast_numeric(const void * n, uint8_t type_id)
 {
   switch (type_id) {

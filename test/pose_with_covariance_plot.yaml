@@ -3,8 +3,16 @@ plots:
   - axes:
       - y_min: -1.5
         y_max: 1.5
-    sources:
-      - topic_name: pose
-        member_path:
-          - pose
-          - covariance[0]
+    series:
+      - source:
+          topic_name: pose
+          member_path:
+            - pose
+            - pose
+            - position
+            - x
+        stddev_source:
+          topic_name: pose
+          member_path:
+            - pose
+            - covariance[0]

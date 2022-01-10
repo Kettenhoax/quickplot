@@ -24,13 +24,58 @@ namespace quickplot
 {
 
 constexpr const char * TOPIC_LIST_WINDOW_ID = "TopicList";
-constexpr float HOVER_TOOLTIP_DEBOUNCE = 0.4;
 
-struct MemberPayload
+static DataSourceConfig source_to_config(const ActiveDataSource & source)
 {
-  const char * topic_name;
-  MemberSequencePath member;
-};
+  DataSourceConfig config;
+  config.topic_name = source.subscription->topic_name();
+  config.member_path = to_descriptor(source.member);
+  return config;
+}
+
+static TimeSeriesConfig series_to_config(const std::pair<TimeSeries, int> & p)
+{
+  TimeSeriesConfig config;
+  const auto & [series, axis] = p;
+  auto active = std::get_if<ActiveDataSource>(&series.source);
+  if (active) {
+    config.source = source_to_config(*active);
+  }
+  auto stddev_active = std::get_if<ActiveDataSource>(&series.stddev_source);
+  if (stddev_active) {
+    config.stddev_source = source_to_config(*stddev_active);
+  }
+  config.axis = axis;
+  return config;
+}
+
+static PlotConfig plot_to_config(const Plot & plot)
+{
+  PlotConfig config;
+  std::transform(
+    plot.series.begin(), plot.series.end(), std::inserter(config.series, config.series.begin()),
+    &series_to_config);
+  config.axes = plot.axes;
+  return config;
+}
+
+// construct id of a time series based on an unresolved member path
+std::string series_id(const std::string & topic, const MemberSequencePathDescriptor & members)
+{
+  std::stringstream ss;
+  ss << topic << "/" << members;
+  return ss.str();
+}
+
+// construct id of a time series based on a resolved member path
+// should match the id based on the unresolved path, to correctly identify a series on the GUI
+// across the initialization process
+std::string series_id(const std::string & topic, const MemberSequencePath & members)
+{
+  std::stringstream ss;
+  ss << topic << "/" << members;
+  return ss.str();
+}
 
 class Application
 {
@@ -48,10 +93,71 @@ private:
   // set of message types for which no typesupport is installed
   std::unordered_set<std::string> message_type_unavailable_;
 
-  // length of history in seconds to display in all plots
+  // length of history of all plots
   double history_length_;
-  // list of plots to display, and their metadata
+
+  // list of plots to display
   std::vector<Plot> plots_;
+
+  void on_time_jump(const rcl_time_jump_t & time_jump)
+  {
+    if (time_jump.clock_change == RCL_ROS_TIME_ACTIVATED ||
+      time_jump.clock_change == RCL_ROS_TIME_DEACTIVATED)
+    {
+      std::cerr << "clock changed";
+    } else if (time_jump.delta.nanoseconds != 0) {
+      // check should not be necessary
+      // fix merged with https://github.com/ros2/rcl/pull/948 and should be in ROS Humble
+      std::cerr << "time jump by a delta of " << time_jump.delta.nanoseconds << "ns";
+    }
+    std::cerr << ", clearing all data" << std::endl;
+    clear();
+  }
+
+  SourceDescriptor source_from_config(const DataSourceConfig & config) const
+  {
+    auto resolved_topic_name =
+      node_->get_node_topics_interface()->resolve_topic_name(config.topic_name);
+    return SourceDescriptor {
+      .resolved_topic_name = resolved_topic_name,
+      .member_path = config.member_path,
+      .error = DataSourceError::None,
+    };
+  }
+
+  std::pair<TimeSeries, int> series_from_config(const TimeSeriesConfig & config) const
+  {
+    TimeSeries series;
+    auto source = source_from_config(config.source);
+    series.id = series_id(source.resolved_topic_name, source.member_path);
+    series.source = source;
+    if (config.stddev_source.has_value()) {
+      series.stddev_source = source_from_config(config.stddev_source.value());
+    }
+    return {series, config.axis};
+  }
+
+  Plot plot_from_config(const PlotConfig & config) const
+  {
+    Plot plot;
+    std::transform(
+      config.series.begin(), config.series.end(), std::back_inserter(
+        plot.series), std::bind(&Application::series_from_config, this, std::placeholders::_1));
+    plot.axes = config.axes;
+
+    int max_axis = 0;
+    for (const auto & [_, axis] : plot.series) {
+      if (axis > max_axis) {
+        max_axis = axis;
+      }
+    }
+    plot.axes.resize(
+      static_cast<size_t>(max_axis + 1), AxisConfig {
+        .y_min = -1.0,
+        .y_max = 1.0,
+      });
+    return plot;
+  }
 
 public:
   explicit Application(std::shared_ptr<QuickPlotNode> _node)
@@ -72,54 +178,12 @@ public:
       });
   }
 
-  void on_time_jump(const rcl_time_jump_t & time_jump)
-  {
-    if (time_jump.clock_change == RCL_ROS_TIME_ACTIVATED ||
-      time_jump.clock_change == RCL_ROS_TIME_DEACTIVATED)
-    {
-      std::cerr << "clock changed";
-    } else if (time_jump.delta.nanoseconds != 0) {
-      // check should not be necessary
-      // fix merged with https://github.com/ros2/rcl/pull/948 and should be in ROS Humble
-      std::cerr << "time jump by a delta of " << time_jump.delta.nanoseconds << "ns";
-    }
-    std::cerr << ", clearing all data" << std::endl;
-    clear();
-  }
-
   void apply_config(ApplicationConfig config)
   {
     plots_.clear();
     std::transform(
       config.plots.begin(), config.plots.end(), std::back_inserter(plots_),
-      [this](const auto & plot_config) {
-        Plot p;
-        int max_axis = 0;
-        for (const auto & in_source : plot_config.sources) {
-          auto & [new_source, new_axis] = p.sources.emplace_back();
-          new_axis = in_source.axis;
-
-          auto resolved_topic_name =
-          node_->get_node_topics_interface()->resolve_topic_name(in_source.topic_name);
-          new_source.id = source_id(resolved_topic_name, in_source.member_path);
-          new_source.source = SourceDescriptor {
-            .resolved_topic_name = resolved_topic_name,
-            .error = DataSourceError::None,
-            .member_path = in_source.member_path,
-          };
-
-          if (in_source.axis > max_axis) {
-            max_axis = in_source.axis;
-          }
-        }
-        p.axes = plot_config.axes;
-        p.axes.resize(
-          static_cast<size_t>(max_axis + 1), AxisConfig {
-          .y_min = -1.0,
-          .y_max = 1.0,
-        });
-        return p;
-      });
+      std::bind(&Application::plot_from_config, this, std::placeholders::_1));
     history_length_ = config.history_length;
     initialize_pending_sources();
   }
@@ -129,22 +193,8 @@ public:
     ApplicationConfig config;
     config.history_length = history_length_;
     std::transform(
-      plots_.begin(), plots_.end(), std::back_inserter(config.plots), [](const auto & plot) {
-        PlotConfig p;
-        for (const auto & [source, axis] : plot.sources) {
-          auto active = std::get_if<ActiveDataSource>(&source.source);
-          if (active) {
-            p.sources.insert(
-              DataSourceConfig {
-              .topic_name = active->subscription->topic_name(),
-              .member_path = to_descriptor(active->member),
-              .axis = axis
-            });
-          }
-        }
-        p.axes = plot.axes;
-        return p;
-      });
+      plots_.begin(), plots_.end(), std::back_inserter(config.plots),
+      &plot_to_config);
     return config;
   }
 
@@ -164,42 +214,64 @@ public:
     }
   }
 
+  std::optional<ActiveDataSource> try_initialize_source(
+    SourceDescriptor & descriptor)
+  {
+    auto topic = descriptor.resolved_topic_name;
+    auto type_it = available_topics_to_types_.find(topic);
+    if (type_it != available_topics_to_types_.end()) {
+      // if type is known, initialize and set ready state
+      auto itsp_it = message_type_to_introspection_.find(type_it->second);
+      if (itsp_it != message_type_to_introspection_.end()) {
+        try {
+          auto member_opt = itsp_it->second->get_member_sequence_path(descriptor.member_path);
+          if (member_opt.has_value()) {
+            auto subscription = node_->get_or_create_subscription(topic, itsp_it->second);
+            auto member = member_opt.value();
+            auto buffer = subscription->add_source(member);
+            return ActiveDataSource {
+              .warning = DataWarning::None,
+              .subscription = subscription,
+              .member = member,
+              .data = buffer,
+            };
+          } else {
+            descriptor.error = DataSourceError::InvalidMember;
+          }
+        } catch (const introspection_error &) {
+          descriptor.error = DataSourceError::InvalidMember;
+        }
+      }
+      // if type is not known, we leave the source in an error state, and the GUI should show
+      // the source as unavailable
+    }
+    return std::nullopt;
+  }
+
+  void ensure_series_initialized(TimeSeries & series)
+  {
+    auto descriptor = std::get_if<SourceDescriptor>(&series.source);
+    if (descriptor && descriptor->error == DataSourceError::None) {
+      auto active_opt = try_initialize_source(*descriptor);
+      if (active_opt.has_value()) {
+        series.source = active_opt.value();
+      }
+    }
+
+    auto stddev_descriptor = std::get_if<SourceDescriptor>(&series.stddev_source);
+    if (stddev_descriptor && stddev_descriptor->error == DataSourceError::None) {
+      auto active_opt = try_initialize_source(*stddev_descriptor);
+      if (active_opt.has_value()) {
+        series.stddev_source = active_opt.value();
+      }
+    }
+  }
+
   void initialize_pending_sources()
   {
     for (auto & plot : plots_) {
-      for (auto & [source, _] : plot.sources) {
-        auto descriptor = std::get_if<SourceDescriptor>(&source.source);
-        if (descriptor && descriptor->error == DataSourceError::None) {
-          auto topic = source.topic_name();
-          auto type_it = available_topics_to_types_.find(topic);
-          if (type_it != available_topics_to_types_.end()) {
-            // if type is known, initialize and set ready state
-            auto itsp_it = message_type_to_introspection_.find(type_it->second);
-            if (itsp_it != message_type_to_introspection_.end()) {
-              try {
-                auto member_opt = itsp_it->second->get_member_sequence_path(
-                  descriptor->member_path);
-                if (member_opt.has_value()) {
-                  auto subscription = node_->get_or_create_subscription(topic, itsp_it->second);
-                  auto member = member_opt.value();
-                  auto buffer = subscription->add_source(member);
-                  source.source = ActiveDataSource {
-                    .warning = DataWarning::None,
-                    .subscription = subscription,
-                    .member = member,
-                    .data = buffer,
-                  };
-                } else {
-                  descriptor->error = DataSourceError::InvalidMember;
-                }
-              } catch (const introspection_error &) {
-                descriptor->error = DataSourceError::InvalidMember;
-              }
-            }
-            // if type is not known, we leave the source at initialized, and the GUI should show
-            // the state as unavailable
-          }
-        }
+      for (auto & [series, _] : plot.series) {
+        ensure_series_initialized(series);
       }
     }
   }
@@ -351,6 +423,17 @@ public:
     return std::nullopt;
   }
 
+  void update_data_source(DataSource & source, const PlotViewOptions & plot_opts)
+  {
+    auto active = std::get_if<ActiveDataSource>(&source);
+    if (active) {
+      auto new_warning = prune_and_detect_clock_issues(*active->data, plot_opts);
+      if (new_warning.has_value()) {
+        active->warning = new_warning.value();
+      }
+    }
+  }
+
   void update()
   {
     update_topics();
@@ -367,14 +450,9 @@ public:
 
     // prune all data to time window of plot
     for (auto & plot : plots_) {
-      for (auto & [source, _] : plot.sources) {
-        auto active = std::get_if<ActiveDataSource>(&source.source);
-        if (active) {
-          auto new_warning = prune_and_detect_clock_issues(*active->data, plot_opts);
-          if (new_warning.has_value()) {
-            active->warning = new_warning.value();
-          }
-        }
+      for (auto & [series, _] : plot.series) {
+        update_data_source(series.source, plot_opts);
+        update_data_source(series.stddev_source, plot_opts);
       }
     }
     PlotDock(plot_opts);
@@ -392,11 +470,11 @@ public:
       std::set<std::shared_ptr<PlotSubscription>, decltype(cmp_topic_names)> active_topics(
         cmp_topic_names);
       for (auto & plot : plots_) {
-        for (auto & [source, _] : plot.sources) {
-            auto active = std::get_if<ActiveDataSource>(&source.source);
-            if (active) {
-              active_topics.insert(active->subscription);
-            }
+        for (auto & [series, _] : plot.series) {
+          auto active = std::get_if<ActiveDataSource>(&series.source);
+          if (active) {
+            active_topics.insert(active->subscription);
+          }
         }
       }
 
@@ -476,70 +554,15 @@ public:
       if (ImGui::Begin(id.c_str(), &plot_window_enabled)) {
         ImGui::PopStyleVar();
 
-        auto plot_view_result = PlotView(id.c_str(), *plot_it, plot_opts);
+        auto plot_view_result = BeginPlotView(id.c_str(), *plot_it, plot_opts);
         if (plot_view_result.displayed) {
           history_length_ += plot_view_result.time_scale_delta;
 
-          for (ImPlotYAxis a = 0; a < static_cast<ImPlotYAxis>(plot_it->axes.size()); a++) {
-            for (auto source_it = plot_it->sources.begin(); source_it != plot_it->sources.end(); ) {
-              auto axis = source_it->second;
-              if (axis != a) {
-                // ensure source occurs in this plot axis
-                ++source_it;
-                continue;
-              }
-              const auto & source = source_it->first;
-
-              // set axis just before matching source was found, to ensure axis is only displayed
-              // if corresponding source exists
-              ImPlot::SetPlotYAxis(a);
-
-              // display either data or detected errors related to the data
-              std::visit(
-                overloaded {
-                  [this, source, &plot_opts](const ActiveDataSource & active) {
-                    if (active.warning == DataWarning::None) {
-                      auto data = active.data->data();
-                      PlotSource(source, *data);
-                    } else {
-                      PlotSourceError(source, get_warning_message(active.warning), plot_opts);
-                    }
-                  },
-                  [source, &plot_opts](const SourceDescriptor & descriptor) {
-                    PlotSourceError(source, get_error_message(descriptor.error), plot_opts);
-                  }
-                }, source.source);
-
-              if (PlotSourcePopup(source)) {
-                source_it = plot_it->sources.erase(source_it);
-              } else {
-                ++source_it;
-              }
-            }
-            auto & axis_config = plot_it->axes[a];
-            // store the current plot limits, in case they were changed via user input
-            auto limits = ImPlot::GetPlotLimits(a);
-            axis_config.y_min = limits.Y.Min;
-            axis_config.y_max = limits.Y.Max;
-          }
-
-          if (ImPlot::BeginDragDropTarget()) {
-            if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
-              accept_member_payload(
-                *plot_it, ImPlotYAxis_1,
-                static_cast<MemberPayload *>(payload->Data));
-            }
-            ImPlot::EndDragDropTarget();
-          }
-          for (auto axis : {ImPlotYAxis_1, ImPlotYAxis_2}) {
-            if (ImPlot::BeginDragDropTargetY(axis)) {
-              if (const ImGuiPayload * payload = ImGui::AcceptDragDropPayload("topic_member")) {
-                accept_member_payload(
-                  *plot_it, axis,
-                  static_cast<MemberPayload *>(payload->Data));
-              }
-              ImPlot::EndDragDropTarget();
-            }
+          auto payload_opt = PlotView(*plot_it, plot_opts);
+          if (payload_opt.has_value()) {
+            auto payload = payload_opt.value();
+            accept_member_payload(
+              *plot_it, payload.axis, &payload.member);
           }
           EndPlotView();
         }
@@ -573,25 +596,25 @@ public:
     auto subscription = node_->get_or_create_subscription(payload->topic_name, introspection);
     auto buffer = subscription->add_source(payload->member);
 
-    auto id = source_id(payload->topic_name, payload->member);
+    auto id = series_id(payload->topic_name, payload->member);
     auto it = std::find_if(
-      plot.sources.begin(), plot.sources.end(), [&id](const auto & item) {
+      plot.series.begin(), plot.series.end(), [&id](const auto & item) {
         return item.first.id == id;
       });
-    if (it != plot.sources.end()) {
+    if (it != plot.series.end()) {
       // ensure the same source config is not added twice
       return;
     }
-    auto & [source, new_axis] = plot.sources.emplace_back();
+    auto & [new_series, new_axis] = plot.series.emplace_back();
     new_axis = axis;
     // assume the state is Ok, since the topic was drag-dropped from the available list
-    source.source = ActiveDataSource {
+    new_series.source = ActiveDataSource {
       .warning = DataWarning::None,
       .subscription = subscription,
       .member = payload->member,
       .data = buffer,
     };
-    source.id = id;
+    new_series.id = id;
 
     while (static_cast<size_t>(axis + 1) > plot.axes.size()) {
       auto & new_axis = plot.axes.emplace_back();

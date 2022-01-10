@@ -16,22 +16,34 @@ TEST(test_config, parse_example_config) {
   EXPECT_EQ(plot.axes.size(), 1u);
   EXPECT_EQ(plot.axes[0].y_min, -2.0);
   EXPECT_EQ(plot.axes[0].y_max, 2.0);
-  EXPECT_EQ(plot.sources.size(), 2lu);
+  EXPECT_EQ(plot.series.size(), 2lu);
 
   // TODO(ZeilingerM): order of items in set is not defined
   // need a way to test set for exactly two specific struct items
-  auto it = plot.sources.begin();
-  EXPECT_EQ(it->topic_name, "sequence");
-  ASSERT_EQ(it->member_path.size(), 2lu);
-  EXPECT_THAT(it->member_path[0].member_name, StrEq("inner"));
-  EXPECT_EQ(it->member_path[0].sequence_idx, 1lu);
-  EXPECT_THAT(it->member_path[1].member_name, StrEq("value"));
-  EXPECT_FALSE(it->member_path[1].sequence_idx.has_value());
+  auto it = plot.series.begin();
+  auto source = it->source;
+  EXPECT_EQ(source.topic_name, "sequence");
+  ASSERT_EQ(source.member_path.size(), 2lu);
+  EXPECT_THAT(source.member_path[0].member_name, StrEq("inner"));
+  EXPECT_EQ(source.member_path[0].sequence_idx, 1lu);
+  EXPECT_THAT(source.member_path[1].member_name, StrEq("value"));
+  EXPECT_FALSE(source.member_path[1].sequence_idx.has_value());
+
+  ASSERT_TRUE(it->stddev_source.has_value());
+  source = it->stddev_source.value();
+  EXPECT_EQ(source.topic_name, "sequence");
+  ASSERT_EQ(source.member_path.size(), 1lu);
+  EXPECT_THAT(source.member_path[0].member_name, StrEq("field"));
+  EXPECT_FALSE(source.member_path[0].sequence_idx.has_value());
+
   ++it;
-  EXPECT_EQ(it->topic_name, "/flat");
-  ASSERT_EQ(it->member_path.size(), 2lu);
-  EXPECT_THAT(it->member_path[0].member_name, StrEq("inner"));
-  EXPECT_FALSE(it->member_path[0].sequence_idx.has_value());
-  EXPECT_THAT(it->member_path[1].member_name, StrEq("value"));
-  EXPECT_FALSE(it->member_path[1].sequence_idx.has_value());
+  source = it->source;
+  EXPECT_EQ(source.topic_name, "/flat");
+  ASSERT_EQ(source.member_path.size(), 2lu);
+  EXPECT_THAT(source.member_path[0].member_name, StrEq("inner"));
+  EXPECT_FALSE(source.member_path[0].sequence_idx.has_value());
+  EXPECT_THAT(source.member_path[1].member_name, StrEq("value"));
+  EXPECT_FALSE(source.member_path[1].sequence_idx.has_value());
+
+  EXPECT_FALSE(it->stddev_source.has_value());
 }

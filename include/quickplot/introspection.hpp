@@ -58,12 +58,6 @@ using MemberSequencePathItem = std::pair<MemberPtr, size_t>;
 
 using MemberSequencePath = std::vector<MemberSequencePathItem>;
 
-// construct source id to identify data source from a descriptor
-std::string source_id(const std::string & topic, const MemberSequencePathDescriptor & members);
-
-// construct source id to identify data source from a resolved member path
-std::string source_id(const std::string & topic, const MemberSequencePath & member_path);
-
 double cast_numeric(const void * n, uint8_t type_id);
 
 bool is_numeric(uint8_t type_id);

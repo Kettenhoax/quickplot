@@ -33,11 +33,10 @@ struct convert<std::unordered_set<Value>>
     if (!node.IsSequence()) {
       return false;
     }
-    bool result = true;
     for (auto it = node.begin(); it != node.end(); ++it) {
       rhs.insert(it->as<Value>());
     }
-    return result;
+    return true;
   }
 };
 
@@ -87,9 +86,6 @@ struct convert<quickplot::DataSourceConfig>
     Node node;
     node["topic_name"] = config.topic_name;
     node["member_path"] = config.member_path;
-    if (config.axis != 0) {
-      node["axis"] = config.axis;
-    }
     return node;
   }
 
@@ -97,6 +93,32 @@ struct convert<quickplot::DataSourceConfig>
   {
     config.topic_name = node["topic_name"].as<std::string>();
     config.member_path = node["member_path"].as<quickplot::MemberSequencePathDescriptor>();
+    return true;
+  }
+};
+
+template<>
+struct convert<quickplot::TimeSeriesConfig>
+{
+  static Node encode(const quickplot::TimeSeriesConfig & config)
+  {
+    Node node;
+    node["source"] = config.source;
+    if (config.stddev_source.has_value()) {
+      node["stddev_source"] = config.stddev_source.value();
+    }
+    if (config.axis != 0) {
+      node["axis"] = config.axis;
+    }
+    return node;
+  }
+
+  static bool decode(const Node & node, quickplot::TimeSeriesConfig & config)
+  {
+    config.source = node["source"].as<quickplot::DataSourceConfig>();
+    if (node["stddev_source"].IsDefined()) {
+      config.stddev_source = node["stddev_source"].as<quickplot::DataSourceConfig>();
+    }
     if (node["axis"].IsDefined()) {
       config.axis = node["axis"].as<int>();
       if (config.axis < 0 || config.axis > 2) {
@@ -135,14 +157,14 @@ struct convert<quickplot::PlotConfig>
   {
     Node node;
     node["axes"] = s.axes;
-    node["sources"] = s.sources;
+    node["series"] = s.series;
     return node;
   }
 
   static bool decode(const Node & node, quickplot::PlotConfig & s)
   {
     s.axes = node["axes"].as<std::vector<quickplot::AxisConfig>>();
-    s.sources = node["sources"].as<std::unordered_set<quickplot::DataSourceConfig>>();
+    s.series = node["series"].as<std::unordered_set<quickplot::TimeSeriesConfig>>();
     return true;
   }
 };

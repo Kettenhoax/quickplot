@@ -23,12 +23,27 @@ struct DataSourceConfig
 {
   std::string topic_name;
   MemberSequencePathDescriptor member_path;
-  // axis 0, 1 or 2
-  int axis;
 
   inline bool operator==(const DataSourceConfig & other) const
   {
-    return topic_name == other.topic_name && member_path == other.member_path && axis == other.axis;
+    return topic_name == other.topic_name && member_path == other.member_path;
+  }
+};
+
+struct TimeSeriesConfig
+{
+  // source of the time series data
+  DataSourceConfig source;
+
+  // source of standard deviation of the data
+  std::optional<DataSourceConfig> stddev_source;
+
+  // axis 0, 1 or 2
+  int axis;
+
+  inline bool operator==(const TimeSeriesConfig & other) const
+  {
+    return source == other.source && stddev_source == other.stddev_source && axis == other.axis;
   }
 };
 
@@ -37,11 +52,11 @@ struct DataSourceConfig
 namespace std
 {
 template<>
-struct hash<quickplot::DataSourceConfig>
+struct hash<quickplot::TimeSeriesConfig>
 {
-  inline size_t operator()(const quickplot::DataSourceConfig & config) const
+  inline size_t operator()(const quickplot::TimeSeriesConfig & config) const
   {
-    return hash<std::string>().operator()(config.topic_name);
+    return hash<std::string>().operator()(config.source.topic_name);
   }
 };
 } // namespace std
@@ -57,7 +72,7 @@ struct AxisConfig
 
 struct PlotConfig
 {
-  std::unordered_set<DataSourceConfig> sources;
+  std::unordered_set<TimeSeriesConfig> series;
   std::vector<AxisConfig> axes;
 };
 
