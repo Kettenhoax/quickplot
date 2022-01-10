@@ -10,6 +10,8 @@ plots:
       - source:
           topic_name: sequence
           member_path: ["inner[1]", value]
+          op: id
         stddev_source:
           topic_name: sequence
           member_path: [field]
+          op: sqrt

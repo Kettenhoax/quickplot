@@ -5,6 +5,7 @@
 #include <filesystem>
 
 namespace fs = std::filesystem;
+using Op = quickplot::DataSourceOperator;
 using ::testing::StrEq;
 
 TEST(test_config, parse_example_config) {
@@ -28,6 +29,7 @@ TEST(test_config, parse_example_config) {
   EXPECT_EQ(source.member_path[0].sequence_idx, 1lu);
   EXPECT_THAT(source.member_path[1].member_name, StrEq("value"));
   EXPECT_FALSE(source.member_path[1].sequence_idx.has_value());
+  EXPECT_EQ(source.op, Op::Identity);
 
   ASSERT_TRUE(it->stddev_source.has_value());
   source = it->stddev_source.value();
@@ -35,6 +37,7 @@ TEST(test_config, parse_example_config) {
   ASSERT_EQ(source.member_path.size(), 1lu);
   EXPECT_THAT(source.member_path[0].member_name, StrEq("field"));
   EXPECT_FALSE(source.member_path[0].sequence_idx.has_value());
+  EXPECT_EQ(source.op, Op::Sqrt);
 
   ++it;
   source = it->source;
@@ -44,6 +47,7 @@ TEST(test_config, parse_example_config) {
   EXPECT_FALSE(source.member_path[0].sequence_idx.has_value());
   EXPECT_THAT(source.member_path[1].member_name, StrEq("value"));
   EXPECT_FALSE(source.member_path[1].sequence_idx.has_value());
+  EXPECT_EQ(source.op, Op::Identity);
 
   EXPECT_FALSE(it->stddev_source.has_value());
 }

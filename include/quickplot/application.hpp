@@ -54,13 +54,13 @@ private:
     clear();
   }
 
-  SourceDescriptor source_from_config(const DataSourceConfig & config) const
+  SourceInfo source_from_config(const DataSourceConfig & config) const
   {
-    auto resolved_topic_name =
+    DataSourceConfig config_cpy = config;
+    config_cpy.topic_name =
       node_->get_node_topics_interface()->resolve_topic_name(config.topic_name);
-    return SourceDescriptor {
-      .resolved_topic_name = resolved_topic_name,
-      .member_path = config.member_path,
+    return SourceInfo {
+      .config = config_cpy,
       .error = DataSourceError::None,
     };
   }
@@ -69,7 +69,7 @@ private:
   {
     TimeSeries series;
     auto source = source_from_config(config.source);
-    series.id = series_id(source.resolved_topic_name, source.member_path);
+    series.id = series_id(source.config);
     series.source = source;
     if (config.stddev_source.has_value()) {
       series.stddev_source = source_from_config(config.stddev_source.value());
@@ -138,11 +138,9 @@ public:
     return config;
   }
 
-  std::optional<ActiveDataSource> try_initialize_source(
-    SourceDescriptor & descriptor)
+  std::optional<ActiveDataSource> try_initialize_source(SourceInfo & source_info)
   {
-    auto topic = descriptor.resolved_topic_name;
-    auto type_it = available_topics_to_types_.find(topic);
+    auto type_it = available_topics_to_types_.find(source_info.config.topic_name);
     if (type_it != available_topics_to_types_.end()) {
       // if type is known, initialize and set ready state
       const auto & [topic, type_info] = *type_it;
@@ -150,25 +148,29 @@ public:
       if (introspection_opt) {
         auto introspection = *introspection_opt;
         try {
-          auto member_opt = introspection->get_member_sequence_path(descriptor.member_path);
+          auto member_opt = introspection->get_member_sequence_path(source_info.config.member_path);
           if (member_opt.has_value()) {
             auto subscription = node_->get_or_create_subscription(topic, introspection);
             auto member = member_opt.value();
-            auto buffer = subscription->add_source(member);
+            MessageAccessor accessor {
+              .member = member,
+              .op = source_info.config.op,
+            };
+            auto buffer = subscription->add_source(accessor);
             return ActiveDataSource {
               .warning = DataWarning::None,
               .subscription = subscription,
-              .member = member,
+              .accessor = accessor,
               .data = buffer,
             };
           } else {
-            descriptor.error = DataSourceError::InvalidMember;
+            source_info.error = DataSourceError::InvalidMember;
           }
         } catch (const introspection_error &) {
-          descriptor.error = DataSourceError::InvalidMember;
+          source_info.error = DataSourceError::InvalidMember;
         }
       } else {
-        descriptor.error = DataSourceError::MessageTypeUnavailable;
+        source_info.error = DataSourceError::MessageTypeUnavailable;
       }
     } // else {
       // if type is not known yet, we leave the source in an uninitialized state, and the GUI should
@@ -179,7 +181,7 @@ public:
 
   void ensure_series_initialized(TimeSeries & series)
   {
-    auto descriptor = std::get_if<SourceDescriptor>(&series.source);
+    auto descriptor = std::get_if<SourceInfo>(&series.source);
     if (descriptor && descriptor->error == DataSourceError::None) {
       auto active_opt = try_initialize_source(*descriptor);
       if (active_opt.has_value()) {
@@ -187,7 +189,7 @@ public:
       }
     }
 
-    auto stddev_descriptor = std::get_if<SourceDescriptor>(&series.stddev_source);
+    auto stddev_descriptor = std::get_if<SourceInfo>(&series.stddev_source);
     if (stddev_descriptor && stddev_descriptor->error == DataSourceError::None) {
       auto active_opt = try_initialize_source(*stddev_descriptor);
       if (active_opt.has_value()) {
@@ -370,15 +372,15 @@ public:
 
   void accept_member_payload(Plot & plot, ImPlotYAxis axis, MemberPayload * payload)
   {
-    const auto& type_info = available_topics_to_types_.at(payload->topic_name);
+    const auto & type_info = available_topics_to_types_.at(payload->topic_name);
     auto introspection_opt = std::get_if<MessageIntrospectionPtr>(&type_info);
     rcpputils::assert_true(
       static_cast<bool>(introspection_opt),
       "message type must be available when accept_member_payload is triggered");
     auto subscription = node_->get_or_create_subscription(payload->topic_name, *introspection_opt);
-    auto buffer = subscription->add_source(payload->member);
+    auto buffer = subscription->add_source(payload->accessor);
 
-    auto id = series_id(payload->topic_name, payload->member);
+    auto id = series_id(payload->topic_name, payload->accessor);
     auto it = std::find_if(
       plot.series.begin(), plot.series.end(), [&id](const auto & item) {
         return item.first.id == id;
@@ -393,7 +395,7 @@ public:
     new_series.source = ActiveDataSource {
       .warning = DataWarning::None,
       .subscription = subscription,
-      .member = payload->member,
+      .accessor = payload->accessor,
       .data = buffer,
     };
     new_series.id = id;

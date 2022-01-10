@@ -19,7 +19,7 @@ overloaded(Ts ...)->overloaded<Ts...>;
 struct MemberPayload
 {
   std::string topic_name;
-  MemberSequencePath member;
+  MessageAccessor accessor;
 };
 
 struct SeriesPayload
@@ -44,10 +44,9 @@ enum class DataWarning
   TimeStampOutOfRange = 1,
 };
 
-struct SourceDescriptor
+struct SourceInfo
 {
-  std::string resolved_topic_name;
-  MemberSequencePathDescriptor member_path;
+  DataSourceConfig config;
   DataSourceError error;
 };
 
@@ -58,8 +57,7 @@ struct ActiveDataSource
   // pointer to subscription which fills the buffer
   std::shared_ptr<PlotSubscription> subscription;
 
-  // resolved member path of topic type
-  MemberSequencePath member;
+  MessageAccessor accessor;
 
   // buffer to time series
   std::shared_ptr<PlotDataBuffer> data;
@@ -68,7 +66,7 @@ struct ActiveDataSource
 // data sources may be uninitialized, or have failed to do so due to runtime error, in which case
 // they are managed as descriptors to display errors to the user
 // if they are initialized and active, they manage the data source and buffers
-using DataSource = std::variant<SourceDescriptor, ActiveDataSource>;
+using DataSource = std::variant<SourceInfo, ActiveDataSource>;
 
 struct TimeSeries
 {
@@ -83,8 +81,8 @@ struct TimeSeries
         [this](const ActiveDataSource & active) {
           return active.subscription->topic_name();
         },
-        [this](const SourceDescriptor & descriptor) {
-          return descriptor.resolved_topic_name;
+        [this](const SourceInfo & source_info) {
+          return source_info.config.topic_name;
         }
       }, source);
   }

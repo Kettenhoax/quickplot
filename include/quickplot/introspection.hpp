@@ -33,6 +33,11 @@ struct introspection_error : public std::exception
   }
 };
 
+enum class DataSourceOperator {
+  Identity,
+  Sqrt,
+};
+
 struct MemberSequencePathItemDescriptor
 {
   std::string member_name;
@@ -58,6 +63,14 @@ using MemberSequencePathItem = std::pair<MemberPtr, size_t>;
 
 using MemberSequencePath = std::vector<MemberSequencePathItem>;
 
+struct MessageAccessor {
+  // resolved member path of topic type
+  MemberSequencePath member;
+
+  // operator to apply to the member
+  DataSourceOperator op;
+};
+
 double cast_numeric(const void * n, uint8_t type_id);
 
 bool is_numeric(uint8_t type_id);
@@ -68,9 +81,7 @@ size_t total_member_offset(const MemberPath &);
 
 MemberSequencePath assume_members_unindexed(const MemberPath &);
 
-double get_numeric(const void *, const MemberPath &);
-
-double get_nested_numeric(const void *, const MemberSequencePath &);
+double get_numeric(const void *, const MemberSequencePath &, DataSourceOperator = DataSourceOperator::Identity);
 
 MemberSequencePathItemDescriptor to_descriptor_item(const MemberSequencePathItem &);
 

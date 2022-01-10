@@ -1,8 +1,8 @@
 history_length: 10
 plots:
   - axes:
-      - y_min: -1.5
-        y_max: 1.5
+      - y_min: -3.5
+        y_max: 3.5
     series:
       - source:
           topic_name: pose
@@ -16,3 +16,4 @@ plots:
           member_path:
             - pose
             - covariance[0]
+          op: sqrt

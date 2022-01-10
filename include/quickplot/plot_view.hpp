@@ -230,7 +230,7 @@ std::optional<SeriesPayload> PlotView(Plot & plot, const PlotViewOptions & plot_
               PlotSeriesError(series, get_warning_message(active.warning), plot_opts);
             }
           },
-          [series, &plot_opts](const SourceDescriptor & descriptor) {
+          [series, &plot_opts](const SourceInfo & descriptor) {
             PlotSeriesError(series, get_error_message(descriptor.error), plot_opts);
           }
         }, series.source);

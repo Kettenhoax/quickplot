@@ -60,7 +60,10 @@ RenderResultWithPayload TopicEntryInitialized(
         ImGui::Selectable(member_str.c_str(), false);
         MemberPayload payload {
           .topic_name = topic.c_str(),
-          .member = assume_members_unindexed(member),
+          .accessor = MessageAccessor {
+            .member = assume_members_unindexed(member),
+            .op = DataSourceOperator::Identity,
+          },
         };
         if (ImGui::IsItemHovered()) {
           ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -190,7 +193,7 @@ ClickPayload TopicList(
         ImGui::PopItemWidth();
       }
       for (const auto & it : shown_available_topics) {
-        const auto& [render_result, entry_payload] = TopicEntry(it->first, it->second);
+        const auto & [render_result, entry_payload] = TopicEntry(it->first, it->second);
         if (render_result) {
           payload = entry_payload;
           EndTopicEntry();

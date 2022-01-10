@@ -143,6 +143,12 @@ CircularBuffer::const_iterator PlotDataContainer::end() const
   return parent_->data_.end();
 }
 
+struct ActiveBuffer
+{
+  MessageAccessor accessor;
+  std::weak_ptr<PlotDataBuffer> buffer;
+};
+
 class PlotSubscription
 {
 private:
@@ -158,12 +164,10 @@ private:
   // protect access to list of buffers
   mutable std::mutex buffers_mutex_;
 
-  // One data buffer per plotted member of a message.
-  //
   // Using list instead of vector, since the emplace_back operation does not require
   // the element to be MoveConstructible for resizing the array. The data buffer should
   // not be move constructed.
-  std::list<std::pair<MemberSequencePath, std::weak_ptr<PlotDataBuffer>>> buffers_;
+  std::list<ActiveBuffer> buffers_;
 
 public:
   explicit PlotSubscription(
@@ -192,20 +196,20 @@ public:
   // disable copy and move
   PlotSubscription & operator=(PlotSubscription && other) = delete;
 
-  std::string topic_name() const {
+  std::string topic_name() const
+  {
     return subscription_->get_topic_name();
   }
 
-  std::shared_ptr<PlotDataBuffer> add_source(MemberSequencePath in_member)
+  std::shared_ptr<PlotDataBuffer> add_source(MessageAccessor accessor)
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
-    for (auto & [member, buffer] : buffers_) {
-      if (member == in_member) {
-        std::invalid_argument("member already in subscription");
-      }
-    }
     auto buffer = std::make_shared<PlotDataBuffer>(1);
-    buffers_.emplace_back(in_member, buffer);
+    buffers_.emplace_back(
+      ActiveBuffer {
+        .accessor = accessor,
+        .buffer = buffer,
+      });
     return buffer;
   }
 
@@ -232,33 +236,31 @@ public:
     }
     {
       std::unique_lock<std::mutex> lock(buffers_mutex_);
-      auto it = buffers_.begin();
-      while (it != buffers_.end()) {
-        auto buffer = it->second.lock();
-        if (buffer) {
-          double value = get_nested_numeric(message_buffer_.data(), it->first);
+      std::remove_if(
+        buffers_.begin(), buffers_.end(), [this, t](ActiveBuffer & ab) {
+          auto buffer = ab.buffer.lock();
+          if (!buffer) {
+            return true;
+          }
+          double value = get_numeric(message_buffer_.data(), ab.accessor.member, ab.accessor.op);
           buffer->push(t.seconds(), value);
-          ++it;
-        } else {
-          it = buffers_.erase(it);
-        }
-      }
+          return false;
+        });
     }
   }
 
   void clear()
   {
     std::unique_lock<std::mutex> lock(buffers_mutex_);
-    auto it = buffers_.begin();
-    while (it != buffers_.end()) {
-      auto buffer = it->second.lock();
-      if (buffer) {
+    std::remove_if(
+      buffers_.begin(), buffers_.end(), [](auto & ab) {
+        auto buffer = ab.buffer.lock();
+        if (!buffer) {
+          return true;
+        }
         buffer->clear();
-        ++it;
-      } else {
-        it = buffers_.erase(it);
-      }
-    }
+        return false;
+      });
   }
 };
 

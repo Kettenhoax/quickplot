@@ -18,7 +18,7 @@ class PublishPoseWithCovariance(Node):
         t = self.get_clock().now()
         msg.header.stamp = t.to_msg()
         msg.pose.pose.position.x = math.sin(t.nanoseconds / CONVERSION_CONSTANT)
-        msg.pose.covariance[0] = 1.0
+        msg.pose.covariance[0] = 4.0
         self._pub.publish(msg)
 
 

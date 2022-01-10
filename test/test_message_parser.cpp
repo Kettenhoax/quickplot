@@ -50,15 +50,41 @@ TEST(test_message_parser, twist_stamped_parses_fields)
   auto linear_x_member = introspection->get_member_sequence_path(
     {mb("twist"), mb("linear"), mb("x")});
   ASSERT_TRUE(linear_x_member.has_value());
-  auto linear_x = quickplot::get_nested_numeric(buffer.data(), linear_x_member.value());
+  auto linear_x = quickplot::get_numeric(buffer.data(), linear_x_member.value());
   EXPECT_FLOAT_EQ(linear_x, 1.0);
 
   // get default-initialized numeric
   auto linear_y_member = introspection->get_member_sequence_path(
     {mb("twist"), mb("linear"), mb("y")});
   ASSERT_TRUE(linear_y_member.has_value());
-  auto linear_y = quickplot::get_nested_numeric(buffer.data(), linear_y_member.value());
+  auto linear_y = quickplot::get_numeric(buffer.data(), linear_y_member.value());
   EXPECT_FLOAT_EQ(linear_y, 0.0);
+
+  deserializer.fini_buffer(buffer);
+}
+
+TEST(test_message_parser, twist_applies_sqrt_operator)
+{
+  using geometry_msgs::msg::Twist;
+  auto introspection = std::make_shared<quickplot::MessageIntrospection>("geometry_msgs/Twist");
+  quickplot::IntrospectionMessageDeserializer deserializer(introspection);
+
+  Twist msg;
+  msg.linear.x = 4.0;
+  rclcpp::Serialization<Twist> serializer;
+  rclcpp::SerializedMessage serialized_msg;
+  serializer.serialize_message(static_cast<void *>(&msg), &serialized_msg);
+
+  auto buffer = deserializer.init_buffer();
+  deserializer.deserialize(serialized_msg, buffer.data());
+
+  // get initialized numeric
+  auto linear_x_member = introspection->get_member_sequence_path({mb("linear"), mb("x")});
+  ASSERT_TRUE(linear_x_member.has_value());
+  auto linear_x = quickplot::get_numeric(
+    buffer.data(),
+    linear_x_member.value(), quickplot::DataSourceOperator::Sqrt);
+  EXPECT_FLOAT_EQ(linear_x, 2.0);
 
   deserializer.fini_buffer(buffer);
 }
@@ -89,7 +115,7 @@ TEST(test_message_parser, detection_parses_nested_array)
     introspection->get_member_sequence_path(
     {mbi("detections", 1), mb("bbox"), mb("center"), mb("position"), mb("x")});
   ASSERT_TRUE(x_member_opt.has_value());
-  auto box_x = quickplot::get_nested_numeric(buffer.data(), x_member_opt.value());
+  auto box_x = quickplot::get_numeric(buffer.data(), x_member_opt.value());
   EXPECT_FLOAT_EQ(box_x, 1.0);
 
   // doubly nested, field leaf
@@ -97,14 +123,14 @@ TEST(test_message_parser, detection_parses_nested_array)
     introspection->get_member_sequence_path(
     {mbi("detections", 0), mbi("results", 0), mb("hypothesis"), mb("score")});
   ASSERT_TRUE(score_member_opt.has_value());
-  auto score = quickplot::get_nested_numeric(buffer.data(), score_member_opt.value());
+  auto score = quickplot::get_numeric(buffer.data(), score_member_opt.value());
   EXPECT_FLOAT_EQ(score, 2.0);
 
   // triple nested, array leaf
   auto cov_member_opt = introspection->get_member_sequence_path(
     {mbi("detections", 0), mbi("results", 0), mb("pose"), mbi("covariance", 35)});
   ASSERT_TRUE(cov_member_opt.has_value());
-  auto cov = quickplot::get_nested_numeric(buffer.data(), cov_member_opt.value());
+  auto cov = quickplot::get_numeric(buffer.data(), cov_member_opt.value());
   EXPECT_FLOAT_EQ(cov, 3.0);
 
   deserializer.fini_buffer(buffer);

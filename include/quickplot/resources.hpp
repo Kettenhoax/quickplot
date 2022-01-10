@@ -6,14 +6,28 @@
 #include <utility>
 #include <unordered_map>
 #include "quickplot/introspection.hpp"
+#include "quickplot/plot.hpp"
 
-namespace quickplot {
+namespace quickplot
+{
+
+struct MessageTypeError
+{
+  std::string message_type;
+  std::string error_message;
+};
+
+using MessageIntrospectionPtr = std::shared_ptr<MessageIntrospection>;
+
+// either a loaded and initialized introspection service, information on why it isn't available
+using MessageTypeInfo = std::variant<MessageIntrospectionPtr, MessageTypeError>;
 
 DataSourceConfig source_to_config(const ActiveDataSource & source)
 {
   DataSourceConfig config;
   config.topic_name = source.subscription->topic_name();
-  config.member_path = to_descriptor(source.member);
+  config.member_path = to_descriptor(source.accessor.member);
+  config.op = source.accessor.op;
   return config;
 }
 
@@ -44,33 +58,28 @@ PlotConfig plot_to_config(const Plot & plot)
 }
 
 // construct id of a time series based on an unresolved member path
-std::string series_id(const std::string & topic, const MemberSequencePathDescriptor & members)
+std::string series_id(const DataSourceConfig & source_config)
 {
   std::stringstream ss;
-  ss << topic << "/" << members;
+  ss << source_config.topic_name << "/" << source_config.member_path;
+  if (source_config.op == DataSourceOperator::Sqrt) {
+    ss << "-sqrt";
+  }
   return ss.str();
 }
 
 // construct id of a time series based on a resolved member path
 // should match the id based on the unresolved path, to correctly identify a series on the GUI
 // across the initialization process
-std::string series_id(const std::string & topic, const MemberSequencePath & members)
+std::string series_id(const std::string & topic, const MessageAccessor & accessor)
 {
   std::stringstream ss;
-  ss << topic << "/" << members;
+  ss << topic << "/" << accessor.member;
+  if (accessor.op == DataSourceOperator::Sqrt) {
+    ss << "-sqrt";
+  }
   return ss.str();
 }
-
-struct MessageTypeError
-{
-  std::string message_type;
-  std::string error_message;
-};
-
-using MessageIntrospectionPtr = std::shared_ptr<MessageIntrospection>;
-
-// either a loaded and initialized introspection service, information on why it isn't available
-using MessageTypeInfo = std::variant<MessageIntrospectionPtr, MessageTypeError>;
 
 const char * get_message_type(const MessageTypeInfo & type_info)
 {

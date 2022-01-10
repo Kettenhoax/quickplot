@@ -86,6 +86,9 @@ struct convert<quickplot::DataSourceConfig>
     Node node;
     node["topic_name"] = config.topic_name;
     node["member_path"] = config.member_path;
+    if (config.op == quickplot::DataSourceOperator::Sqrt) {
+      node["op"] = "sqrt";
+    }
     return node;
   }
 
@@ -93,6 +96,12 @@ struct convert<quickplot::DataSourceConfig>
   {
     config.topic_name = node["topic_name"].as<std::string>();
     config.member_path = node["member_path"].as<quickplot::MemberSequencePathDescriptor>();
+    config.op = quickplot::DataSourceOperator::Identity;
+    if (node["op"].IsDefined()) {
+      if (node["op"].as<std::string>() == "sqrt") {
+        config.op = quickplot::DataSourceOperator::Sqrt;
+      }
+    }
     return true;
   }
 };

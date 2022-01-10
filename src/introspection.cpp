@@ -58,13 +58,7 @@ MemberSequencePath assume_members_unindexed(const MemberPath & in_path)
   return result;
 }
 
-double get_numeric(const void * message, const MemberPath & member)
-{
-  auto bytes = static_cast<const uint8_t *>(message) + total_member_offset(member);
-  return cast_numeric(bytes, member.back()->type_id_);
-}
-
-double get_nested_numeric(const void * message, const MemberSequencePath & path)
+double get_numeric(const void * message, const MemberSequencePath & path, DataSourceOperator op)
 {
   auto member_memory = static_cast<const uint8_t *>(message);
   uint8_t last_type;
@@ -76,7 +70,11 @@ double get_nested_numeric(const void * message, const MemberSequencePath & path)
     }
     last_type = member->type_id_;
   }
-  return cast_numeric(member_memory, last_type);
+  auto value = cast_numeric(member_memory, last_type);
+  if (op == DataSourceOperator::Sqrt) {
+    value = std::sqrt(value);
+  }
+  return value;
 }
 
 MemberSequencePathItemDescriptor to_descriptor_item(const MemberSequencePathItem & item)

@@ -23,10 +23,11 @@ struct DataSourceConfig
 {
   std::string topic_name;
   MemberSequencePathDescriptor member_path;
+  DataSourceOperator op;
 
   inline bool operator==(const DataSourceConfig & other) const
   {
-    return topic_name == other.topic_name && member_path == other.member_path;
+    return topic_name == other.topic_name && member_path == other.member_path && op == other.op;
   }
 };
 
