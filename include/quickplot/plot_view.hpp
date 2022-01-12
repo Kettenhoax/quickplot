@@ -125,21 +125,23 @@ void PlotSourceStddev(
   const ActiveDataSource & stddev)
 {
   auto stddev_data = stddev.data->data();
-  auto stddev_it = stddev_data->begin();
   auto source_data = source.data->data();
-  auto source_it = source_data->begin();
 
   std::vector<double> times(source_data->size());
   std::vector<double> lower(source_data->size());
   std::vector<double> upper(source_data->size());
 
-  for (size_t i = 0; i < lower.size(); i++) {
-    ImPlotPoint stddev_val = stddev_it[i];
-    ImPlotPoint data_val = source_it[i];
+  auto stddev_vals = sync_right(
+    source_data->begin(), source_data->end(),
+    stddev_data->begin(), stddev_data->end(), 0.0);
+  assert(stddev_vals.size() == source_data->size());
 
+  auto source_it = source_data->begin();
+  for (size_t i = 0; i < lower.size(); i++) {
+    ImPlotPoint data_val = source_it[i];
     times[i] = data_val.x;
-    lower[i] = data_val.y - stddev_val.y;
-    upper[i] = data_val.y + stddev_val.y;
+    lower[i] = data_val.y - stddev_vals[i];
+    upper[i] = data_val.y + stddev_vals[i];
   }
 
   ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);

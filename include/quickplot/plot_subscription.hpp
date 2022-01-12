@@ -8,7 +8,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
-#include <unordered_map>
+#include <limits>
 #include <memory>
 #include <deque>
 #include <list>
@@ -141,6 +141,37 @@ CircularBuffer::const_iterator PlotDataContainer::begin() const
 CircularBuffer::const_iterator PlotDataContainer::end() const
 {
   return parent_->data_.end();
+}
+
+// return vector of items in b2, with nan values for every timestamp in b1 that does not occur in b2
+// timestamps in buffers are assumed to be sorted in ascending order already
+template<typename Iterator>
+std::vector<double> sync_right(
+  Iterator b1_begin,
+  Iterator b1_end,
+  Iterator b2_begin,
+  Iterator b2_end,
+  double nan = std::numeric_limits<double>::quiet_NaN(),
+  double tolerance = 1e-3)
+{
+  std::vector<double> result;
+  auto it = b2_begin;
+  for (auto lit = b1_begin; lit != b1_end; ++lit) {
+    if (it == b2_end) {
+      result.push_back(nan);
+      continue;
+    }
+    const auto & item = *lit;
+    do {
+      if (std::abs(item.x - it->x) < tolerance) {
+        result.push_back(it->y);
+        ++it;
+      } else {
+        result.push_back(nan);
+      }
+    } while (it != b2_end && (it->x + tolerance) < item.x);
+  }
+  return result;
 }
 
 struct ActiveBuffer

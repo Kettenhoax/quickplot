@@ -73,6 +73,12 @@ if(BUILD_TESTING)
 
   ament_add_gmock(test_config test/test_config.cpp WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   target_link_libraries(test_config quickplot)
+
+  ament_add_gmock(test_plot test/test_plot.cpp)
+  target_link_libraries(test_plot quickplot)
+  ament_target_dependencies(test_plot
+    implot_vendor
+    rclcpp)
 endif()
 
 install(TARGETS quickplot quickplot_bin

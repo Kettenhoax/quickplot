@@ -1,0 +1,12 @@
+history_length: 10
+plots:
+  - axes:
+      - y_min: -2
+        y_max: 2
+    series:
+      - source:
+          topic_name: value
+          member_path: [vector, x]
+        stddev_source:
+          topic_name: stddev
+          member_path: [vector, x]
