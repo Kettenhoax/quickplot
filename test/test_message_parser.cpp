@@ -78,13 +78,39 @@ TEST(test_message_parser, twist_applies_sqrt_operator)
   auto buffer = deserializer.init_buffer();
   deserializer.deserialize(serialized_msg, buffer.data());
 
-  // get initialized numeric
   auto linear_x_member = introspection->get_member_sequence_path({mb("linear"), mb("x")});
   ASSERT_TRUE(linear_x_member.has_value());
   auto linear_x = quickplot::get_numeric(
     buffer.data(),
     linear_x_member.value(), quickplot::DataSourceOperator::Sqrt);
   EXPECT_FLOAT_EQ(linear_x, 2.0);
+
+  deserializer.fini_buffer(buffer);
+}
+
+TEST(test_message_parser, twist_applies_l2_norm_operator)
+{
+  using geometry_msgs::msg::Twist;
+  auto introspection = std::make_shared<quickplot::MessageIntrospection>("geometry_msgs/Twist");
+  quickplot::IntrospectionMessageDeserializer deserializer(introspection);
+
+  Twist msg;
+  msg.linear.x = 2.0;
+  msg.linear.y = 2.0;
+  msg.linear.z = 1.0;
+  rclcpp::Serialization<Twist> serializer;
+  rclcpp::SerializedMessage serialized_msg;
+  serializer.serialize_message(static_cast<void *>(&msg), &serialized_msg);
+
+  auto buffer = deserializer.init_buffer();
+  deserializer.deserialize(serialized_msg, buffer.data());
+
+  auto linear_member = introspection->get_member_sequence_path({mb("linear")});
+  ASSERT_TRUE(linear_member.has_value());
+  auto norm = quickplot::get_numeric(
+    buffer.data(),
+    linear_member.value(), quickplot::DataSourceOperator::L2Norm);
+  EXPECT_FLOAT_EQ(norm, 3.0);
 
   deserializer.fini_buffer(buffer);
 }

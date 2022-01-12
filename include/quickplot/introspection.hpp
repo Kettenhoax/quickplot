@@ -36,6 +36,7 @@ struct introspection_error : public std::exception
 enum class DataSourceOperator {
   Identity,
   Sqrt,
+  L2Norm,
 };
 
 struct MemberSequencePathItemDescriptor

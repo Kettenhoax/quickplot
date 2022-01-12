@@ -4,11 +4,14 @@
 #include <algorithm>
 #include <rclcpp/rclcpp.hpp>
 #include <boost/utility.hpp> // for next(it)
+#include <geometry_msgs/msg/vector3.hpp>
 #include <rosidl_typesupport_introspection_cpp/identifier.hpp>
 #include "quickplot/introspection.hpp"
 
 namespace quickplot
 {
+
+using geometry_msgs::msg::Vector3;
 
 double cast_numeric(const void * n, uint8_t type_id)
 {
@@ -69,6 +72,10 @@ double get_numeric(const void * message, const MemberSequencePath & path, DataSo
       member_memory = static_cast<const uint8_t *>(next_mem);
     }
     last_type = member->type_id_;
+  }
+  if (op == DataSourceOperator::L2Norm) {
+    auto vector = reinterpret_cast<const Vector3 *>(member_memory);
+    return std::hypot(vector->x, vector->y, vector->z);
   }
   auto value = cast_numeric(member_memory, last_type);
   if (op == DataSourceOperator::Sqrt) {

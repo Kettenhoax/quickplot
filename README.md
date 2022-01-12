@@ -41,14 +41,11 @@ plots:
 
 # planned features
 
-* [ ] use length of geometry_msgs/msg/Vector3 as data source
 * [ ] suggest auto-fit if all y values are off-plot
 * [ ] show error states on topic communication in topic list
 * [ ] warning about NaN values
-
 * [ ] axis unit label suggestion (e.g. m/s for twist.linear)
 * [ ] range suggestions based on suggested unit (e.g. angles -pi to pi)
-
 * [ ] visualize covariance matrices as heatmaps
 
 ## tests
